@@ -1,1 +1,15 @@
-/__pycache__
+# ---Python Bytecode ---
+__pycache__/
+*.pyc
+
+# --- Testing ---
+.pytest_cache/
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+
+# --- Environments & Config ---
+.env
+
+# --- IDE Settings ---
+.vscode/

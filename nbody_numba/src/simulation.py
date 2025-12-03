@@ -1,34 +1,33 @@
+"""
+N-Body Gravity Simulation using Numba (CPU & CUDA)
+==================================================
+Method: Velocity Verlet Integration (Symplectic)
+Complexity: O(N^2)
+"""
+
 import numpy as np
 from numba import njit, prange, float64, cuda
 import math
 
-# System Constants
-G = 6.6743e-11  # Gravitational constant
-EPSILON = 1e-1  # Smoothing factor (softening parameter)
+# --- Constants ---
+G = 6.6743e-11   # Gravitational Constant (m^3 kg^-1 s^-2)
+EPSILON = 1e-5
 
 def is_gpu_available():
-    """Checks if Numba's CUDA target is available."""
-    try:
-        return cuda.is_available()
-    except Exception:
-        return False
+    return cuda.is_available()
 
-# Force computation kernel for CPU
+# --- CPU KERNELS ---
 @njit(parallel=True, fastmath=True)
-def nbody_cpu_kernel(r_pos, masses):
+def cpu_force_kernel(r_pos, masses, r_force):
     """
-    Computes N-body forces on the CPU using Numba JIT (O(N^2)).
-    Parallelized with prange for multi-core performance.
+    Computes gravitational forces on CPU using O(N^2) all-to-all algorithm.
+    Parallelized via OpenMP (prange).
     """
     N = r_pos.shape[0]
-    r_force = np.zeros_like(r_pos)
+    r_force[:] = 0.0
     
-    # prange enables parallel execution of the outer loop
     for i in prange(N):
-        ftmp_x = 0.0
-        ftmp_y = 0.0
-        ftmp_z = 0.0
-        
+        ftmp_x = ftmp_y = ftmp_z = 0.0
         r_i_x, r_i_y, r_i_z = r_pos[i, 0], r_pos[i, 1], r_pos[i, 2]
         m_i = masses[i]
 
@@ -37,13 +36,13 @@ def nbody_cpu_kernel(r_pos, masses):
             dy = r_i_y - r_pos[j, 1]
             dz = r_i_z - r_pos[j, 2]
             
-            d2 = dx * dx + dy * dy + dz * dz
+            d2 = dx*dx + dy*dy + dz*dz
             
-            # Apply smoothing term epsilon (d = sqrt(d^2) + epsilon)
-            dist = math.sqrt(d2) + EPSILON
-            dist3 = dist * dist * dist
+            # Plummer Softening: prevents division by zero if particles overlap
+            dist = math.sqrt(d2 + EPSILON**2)
             
-            F_ij_factor = masses[j] / dist3
+            # Force Magnitude: F = (G * m_i * m_j) / dist^3 * vector_r
+            F_ij_factor = masses[j] / (dist * dist * dist)
             
             ftmp_x += dx * F_ij_factor
             ftmp_y += dy * F_ij_factor
@@ -52,25 +51,45 @@ def nbody_cpu_kernel(r_pos, masses):
         r_force[i, 0] = -G * m_i * ftmp_x
         r_force[i, 1] = -G * m_i * ftmp_y
         r_force[i, 2] = -G * m_i * ftmp_z
-        
-    return r_force
 
-# Force computation kernel for GPU
+@njit(parallel=True, fastmath=True)
+def cpu_step_pos(r_pos, v_vel, masses, F_old, dt):
+    """
+    Velocity Verlet Step 1: Update Position.
+    r(t+dt) = r(t) + v(t)dt + 0.5 * a(t)dt^2
+    """
+    N = r_pos.shape[0]
+    dt2_half = 0.5 * dt * dt
+    for i in prange(N):
+        inv_m = 1.0 / masses[i]
+        r_pos[i, 0] += v_vel[i, 0] * dt + (F_old[i, 0] * inv_m) * dt2_half
+        r_pos[i, 1] += v_vel[i, 1] * dt + (F_old[i, 1] * inv_m) * dt2_half
+        r_pos[i, 2] += v_vel[i, 2] * dt + (F_old[i, 2] * inv_m) * dt2_half
+
+@njit(parallel=True, fastmath=True)
+def cpu_step_vel(v_vel, masses, F_old, F_new, dt):
+    """
+    Velocity Verlet Step 2: Update Velocity.
+    v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt)) * dt
+    """
+    N = v_vel.shape[0]
+    dt_half = 0.5 * dt
+    for i in prange(N):
+        inv_m = 1.0 / masses[i]
+        v_vel[i, 0] += (F_old[i, 0] + F_new[i, 0]) * inv_m * dt_half
+        v_vel[i, 1] += (F_old[i, 1] + F_new[i, 1]) * inv_m * dt_half
+        v_vel[i, 2] += (F_old[i, 2] + F_new[i, 2]) * inv_m * dt_half
+
+# --- GPU KERNELS ---
 if is_gpu_available():
-    @cuda.jit('void(float64[:, :], float64[:], float64[:, :], float64, float64)')
-    def nbody_gpu_kernel(r_pos, masses, r_force, G_const, epsilon):
-        """
-        CUDA kernel to compute N-body forces on the GPU (O(N^2)).
-        Each thread calculates the total force on a single particle 'i'.
-        """
+    @cuda.jit
+    def gpu_force_kernel(r_pos, masses, r_force):
+        """CUDA Kernel for O(N^2) force calculation. One thread per particle."""
         N = r_pos.shape[0]
-        i = cuda.grid(1) 
+        i = cuda.grid(1)
         
         if i < N:
-            ftmp_x = 0.0
-            ftmp_y = 0.0
-            ftmp_z = 0.0
-            
+            ftmp_x = ftmp_y = ftmp_z = 0.0
             r_i_x, r_i_y, r_i_z = r_pos[i, 0], r_pos[i, 1], r_pos[i, 2]
             m_i = masses[i]
             
@@ -79,135 +98,129 @@ if is_gpu_available():
                 dy = r_i_y - r_pos[j, 1]
                 dz = r_i_z - r_pos[j, 2]
                 
-                d2 = dx * dx + dy * dy + dz * dz
-                dist = math.sqrt(d2) + epsilon
-                dist3 = dist * dist * dist
-                F_ij_factor = masses[j] / dist3
+                d2 = dx*dx + dy*dy + dz*dz
+                dist = math.sqrt(d2 + EPSILON**2) 
                 
-                ftmp_x += dx * F_ij_factor
-                ftmp_y += dy * F_ij_factor
-                ftmp_z += dz * F_ij_factor
+                val = masses[j] / (dist * dist * dist)
+                
+                ftmp_x += dx * val
+                ftmp_y += dy * val
+                ftmp_z += dz * val
 
-            r_force[i, 0] = -G_const * m_i * ftmp_x
-            r_force[i, 1] = -G_const * m_i * ftmp_y
-            r_force[i, 2] = -G_const * m_i * ftmp_z
+            r_force[i, 0] = -G * m_i * ftmp_x
+            r_force[i, 1] = -G * m_i * ftmp_y
+            r_force[i, 2] = -G * m_i * ftmp_z
 
-# Wrapper to run the force computation either on CPU or GPU
-def compute_nbody_force(r_pos_host, masses_host, device="auto"):
+    @cuda.jit
+    def gpu_step_pos(r_pos, v_vel, masses, F_old, dt):
+        """CUDA Kernel for Position Update (Verlet Step 1)."""
+        i = cuda.grid(1)
+        if i < r_pos.shape[0]:
+            inv_m = 1.0 / masses[i]
+            dt2_half = 0.5 * dt * dt
+            
+            r_pos[i, 0] += v_vel[i, 0] * dt + (F_old[i, 0] * inv_m) * dt2_half
+            r_pos[i, 1] += v_vel[i, 1] * dt + (F_old[i, 1] * inv_m) * dt2_half
+            r_pos[i, 2] += v_vel[i, 2] * dt + (F_old[i, 2] * inv_m) * dt2_half
+
+    @cuda.jit
+    def gpu_step_vel(v_vel, masses, F_old, F_new, dt):
+        """CUDA Kernel for Velocity Update (Verlet Step 2)."""
+        i = cuda.grid(1)
+        if i < v_vel.shape[0]:
+            inv_m = 1.0 / masses[i]
+            dt_half = 0.5 * dt
+            
+            v_vel[i, 0] += (F_old[i, 0] + F_new[i, 0]) * inv_m * dt_half
+            v_vel[i, 1] += (F_old[i, 1] + F_new[i, 1]) * inv_m * dt_half
+            v_vel[i, 2] += (F_old[i, 2] + F_new[i, 2]) * inv_m * dt_half
+
+def run_simulation(r_pos_host, v_vel_host, masses_host, dt, steps, device="auto", store_history=True):
     """
-    High-level function to select and run the appropriate N-body kernel.
-    """
-    if (device == "gpu" or device == "auto") and is_gpu_available():
-        N = r_pos_host.shape[0]
-        
-        r_pos_device = cuda.to_device(r_pos_host)
-        masses_device = cuda.to_device(masses_host)
-        r_force_device = cuda.device_array_like(r_pos_host)
-        
-        threadsperblock = 256
-        blockspergrid = math.ceil(N / threadsperblock)
-        
-        nbody_gpu_kernel[blockspergrid, threadsperblock](
-            r_pos_device, 
-            masses_device, 
-            r_force_device, 
-            G, 
-            EPSILON
-        )
-        
-        return r_force_device.copy_to_host()
-
-    else:
-        # Fallback or explicit CPU
-        return nbody_cpu_kernel(r_pos_host, masses_host)
-
-# Time integration kernels for updating the positions and velocities on the CPU
-@njit(parallel=True, fastmath=True, cache=True)
-def position_integration_kernel(r_pos, v_vel, masses, F_old, dt):
-    """Updates position based on current velocity and OLD force F^t.
-    x^(t+1) = x^t + v^t * dt + 0.5 * a^t * dt^2
-    """
-    N = r_pos.shape[0]
-    dt2_half = 0.5 * dt * dt
+    Run the N-body simulation.
     
-    for i in prange(N):
-        inv_m = 1.0 / masses[i]
-        
-        # Acceleration: a^t = F^t / m_i
-        ax = F_old[i, 0] * inv_m
-        ay = F_old[i, 1] * inv_m
-        az = F_old[i, 2] * inv_m
-        
-        # Modified Euler 
-        r_pos[i, 0] += v_vel[i, 0] * dt + ax * dt2_half
-        r_pos[i, 1] += v_vel[i, 1] * dt + ay * dt2_half
-        r_pos[i, 2] += v_vel[i, 2] * dt + az * dt2_half
-
-@njit(parallel=True, fastmath=True, cache=True)
-def velocity_integration_kernel(v_vel, masses, F_old, F_new, dt):
-    """Updates velocity using the average of OLD and NEW forces.
-    v^(t+1) = v^t + 0.5 * (a^t + a^(t+1)) * dt
+    Args:
+        device (str): "cpu", "gpu", or "auto".
+        store_history (bool): If True, returns (steps, N, 3) array. 
+                              If False, returns final state (pos, vel).
     """
-    N = v_vel.shape[0]
+    N = r_pos_host.shape[0]
+    use_gpu = (device == "gpu" or device == "auto") and is_gpu_available()
     
-    for i in prange(N):
-        inv_m = 1.0 / masses[i]
-        
-        # Modified Euler: 0.5 * (F_old + F_new) / m_i
-        avg_acc_x = 0.5 * (F_old[i, 0] + F_new[i, 0]) * inv_m
-        avg_acc_y = 0.5 * (F_old[i, 1] + F_new[i, 1]) * inv_m
-        avg_acc_z = 0.5 * (F_old[i, 2] + F_new[i, 2]) * inv_m
-        
-        v_vel[i, 0] += avg_acc_x * dt
-        v_vel[i, 1] += avg_acc_y * dt
-        v_vel[i, 2] += avg_acc_z * dt
-
-# Use Modified Euler for time integration 
-def run_rk2_simulation(initial_positions, initial_velocities, masses, 
-                         dt, n_loops, device="auto", store_history=True):
-    """
-    Runs the N-body simulation using the RK2 / Modified Euler scheme.
-    """
-    r_pos = initial_positions.copy()
-    v_vel = initial_velocities.copy()
+    pos_history = np.zeros((steps+1, N, 3), dtype=np.float64) if store_history else None
+    vel_history = np.zeros((steps+1, N, 3), dtype=np.float64) if store_history else None
 
     if store_history:
-        # Create an array to store positions at each time step
-        # Shape: (num_steps, num_particles, 3_dimensions)
-        positions_history = np.zeros((n_loops, len(masses), 3), dtype=np.float64)
-    
-    # Calculate initial forces (F^t)
-    F_old = compute_nbody_force(r_pos, masses, device=device)
-    F_new = np.zeros_like(r_pos) # Buffer for F^(t+1)
-    
-    print(f"Starting RK2 simulation for {len(masses)} particles. Steps: {n_loops}. Device: {device.upper()}")
+        pos_history[0] = r_pos_host.copy()
+        vel_history[0] = v_vel_host.copy()  
 
-    # Integration loop
-    for step in range(n_loops):
-        
-        # Position integration:
-        # x^(t+1) = x^t + v^t * dt + 0.5 * a^t * dt^2
-        position_integration_kernel(r_pos, v_vel, masses, F_old, dt)
+    if use_gpu:
+        print(f"Running on GPU (CUDA). N={N}, Steps={steps}")
+        threads = 256
+        blocks = math.ceil(N / threads)
 
-        if store_history:
-            # We must .copy() the data, otherwise we just store
-            # a reference to the same array that keeps changing.
-            positions_history[step] = r_pos.copy()
+        # --- OPTIMIZATION: Host-to-Device Copy (Once) ---
+        d_pos = cuda.to_device(r_pos_host)
+        d_vel = cuda.to_device(v_vel_host)
+        d_mass = cuda.to_device(masses_host)
+        # Allocate force buffers directly on GPU memory
+        d_F_old = cuda.device_array((N, 3), dtype=np.float64)
+        d_F_new = cuda.device_array((N, 3), dtype=np.float64)
+        
+        # Initial Force
+        gpu_force_kernel[blocks, threads](d_pos, d_mass, d_F_old)
+        
+        for step in range(steps):
+            # 1. Update Position
+            gpu_step_pos[blocks, threads](d_pos, d_vel, d_mass, d_F_old, dt)
+            
+            if store_history:
+                d_pos.copy_to_host(pos_history[step+1])
+                d_vel.copy_to_host(vel_history[step+1])
+            # 2. Update Force (F_new at new Position)
+            gpu_force_kernel[blocks, threads](d_pos, d_mass, d_F_new)
+            
+            # 3. Update Velocity (Average of F_old and F_new)
+            gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
+            
+            # 4. Swap references (Zero cost)
+            d_F_old, d_F_new = d_F_new, d_F_old
+            
+        return (pos_history, vel_history) if store_history else (d_pos.copy_to_host(), d_vel.copy_to_host())
 
-        # Force computation: 
-        # F_new = F^(t+1) at x^(t+1))
-        F_new[:] = compute_nbody_force(r_pos, masses, device=device)
-        
-        # Velocity Integration
-        # v^(t+1) = v^t + 0.5 * (a^t + a^(t+1)) * dt
-        velocity_integration_kernel(v_vel, masses, F_old, F_new, dt)
-        
-        # Swap buffers
-        F_old, F_new = F_new, F_old 
-        
-    print(f"Simulation finished.")
-
-    if store_history:
-        return positions_history
     else:
-        return r_pos, v_vel
+        print(f"Running on CPU. N={N}, Steps={steps}")
+        r_pos = r_pos_host.copy()
+        v_vel = v_vel_host.copy()
+        masses = masses_host
+        F_old = np.zeros_like(r_pos)
+        F_new = np.zeros_like(r_pos)
+        
+        cpu_force_kernel(r_pos, masses, F_old)
+        
+        for step in range(steps):
+            cpu_step_pos(r_pos, v_vel, masses, F_old, dt)
+            
+            if store_history:
+                pos_history[step+1] = r_pos.copy()
+                vel_history[step+1] = v_vel.copy()            
+                
+            cpu_force_kernel(r_pos, masses, F_new)
+            cpu_step_vel(v_vel, masses, F_old, F_new, dt)
+            F_old[:] = F_new[:] 
+            
+        return (pos_history, vel_history) if store_history else (r_pos, v_vel)
+
+# --- EXAMPLE USAGE ---
+if __name__ == "__main__":
+    num_bodies = 2000
+    # Random Initialization
+    pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
+    vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
+    mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
+    
+    dt = 0.01
+    steps = 100
+    
+    res = run_simulation(pos, vel, mass, dt, steps, device="auto")
+    print("Done.")

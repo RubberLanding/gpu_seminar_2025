@@ -117,3 +117,129 @@ def plot_snapshot(positions, title="N-Body Simulation Snapshot"):
     ax.set_aspect('auto') # 'auto' is common, 'equal' can be buggy in 3D
 
     plt.show()
+
+def generate_solar_system(n_bodies=100):
+    """
+    Generates a stable 'Solar System' like setup for showcasing.
+    Body 0 is a massive 'Sun'. The rest are planets orbiting it.
+    """
+    pos = np.zeros((n_bodies, 3), dtype=np.float64)
+    vel = np.zeros((n_bodies, 3), dtype=np.float64)
+    mass = np.random.rand(n_bodies).astype(np.float64) * 1e10  # Asteroids
+    
+    # 1. Setup the Sun (Massive, at center)
+    mass[0] = 1.0e20 
+    pos[0] = [0, 0, 0]
+    vel[0] = [0, 0, 0]
+    
+    # 2. Setup Planets/Asteroids
+    for i in range(1, n_bodies):
+        # Random distance from 50 to 200
+        dist = 50 + np.random.rand() * 150
+        
+        # Random angle
+        theta = np.random.rand() * 2 * np.pi
+        
+        # Position (Flat disk for nicer visualization)
+        pos[i, 0] = dist * np.cos(theta)
+        pos[i, 1] = dist * np.sin(theta)
+        pos[i, 2] = (np.random.rand() - 0.5) * 5 # Small Z variation
+        
+        # Velocity for circular orbit: v = sqrt(GM / r)
+        # Vector direction: tangent to the circle (-sin, cos)
+        v_orb = np.sqrt(6.6743e-11 * mass[0] / dist)
+        vel[i, 0] = -v_orb * np.sin(theta)
+        vel[i, 1] = v_orb * np.cos(theta)
+        vel[i, 2] = 0
+        
+        # Make a few heavy planets
+        if i < 5:
+            mass[i] *= 1000  # Gas giants
+            
+    return pos, vel, mass
+
+def visualize_showcase(history, masses, tail_length=40):
+    """
+    High-quality animation with trails and auto-centering.
+    """
+    n_steps, n_bodies, _ = history.shape
+    
+    # 1. Setup Style
+    plt.style.use('dark_background')
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Remove panes for "Space" look
+    ax.xaxis.set_pane_color((0.0, 0.0, 0.0, 0.0))
+    ax.yaxis.set_pane_color((0.0, 0.0, 0.0, 0.0))
+    ax.zaxis.set_pane_color((0.0, 0.0, 0.0, 0.0))
+    ax.grid(False)
+    
+    # 2. visual settings
+    # Normalize masses for size: Sun is huge, others are small
+    sizes = np.log(masses) 
+    sizes = (sizes - sizes.min()) / (sizes.max() - sizes.min() + 1e-9)
+    sizes = 5 + sizes * 100  # Scale between 5 and 105
+    
+    # Prepare color map (based on particle index so we can track them)
+    colors = plt.cm.plasma(np.linspace(0, 1, n_bodies))
+    
+    # Initial Plot objects
+    # We use plot() for trails and scatter() for heads
+    trails = [ax.plot([], [], [], '-', lw=0.5, alpha=0.5, color=colors[i])[0] for i in range(n_bodies)]
+    heads = ax.scatter(history[0,:,0], history[0,:,1], history[0,:,2], s=sizes, c=colors)
+    
+    # Camera centering strategy
+    # Center on the heaviest body (The Sun)
+    center_idx = np.argmax(masses)
+    
+    # Calculate global bounds to fix the camera zoom
+    max_range = np.max(np.abs(history[-1] - history[-1][center_idx])) * 1.1
+    
+    def update(frame):
+        # 1. Update Heads (Scatter)
+        heads._offsets3d = (history[frame,:,0], history[frame,:,1], history[frame,:,2])
+        
+        # 2. Update Trails (Lines)
+        # Only draw history up to 'tail_length' frames back
+        start = max(0, frame - tail_length)
+        
+        for i in range(n_bodies):
+            # Optimization: Only draw trails for significant bodies or if N is small
+            # If N > 200, maybe skip trails for tiny asteroids
+            if masses[i] > masses.min() * 10 or n_bodies < 100:
+                trails[i].set_data(history[start:frame+1, i, 0], history[start:frame+1, i, 1])
+                trails[i].set_3d_properties(history[start:frame+1, i, 2])
+        
+        # 3. Dynamic Camera (Follow the Sun)
+        center = history[frame, center_idx]
+        ax.set_xlim(center[0] - max_range, center[0] + max_range)
+        ax.set_ylim(center[1] - max_range, center[1] + max_range)
+        ax.set_zlim(center[2] - max_range, center[2] + max_range)
+        
+        ax.set_title(f"Time Step: {frame}")
+        return trails + [heads]
+
+    anim = FuncAnimation(fig, update, frames=n_steps, interval=20, blit=False)
+    plt.show()
+
+# --- RUN THE SHOWCASE ---
+if __name__ == "__main__":
+    from simulation import run_simulation
+
+    # 1. Generate a stable Solar System
+    N = 100
+    pos, vel, mass = generate_solar_system(N)
+    
+    # 2. Run Simulation (Import your run_simulation function first!)
+    # Note: Use a smaller dt for stability in this tight system
+    # Import the function from your previous code block
+    # from your_script_name import run_simulation 
+    
+    print("Simulating physics...")
+    # Assuming run_simulation is available from previous context:
+    history = run_simulation(pos, vel, mass, dt=0.5, steps=400, device="auto")
+    
+    # 3. Visualize
+    print("Rendering animation...")
+    visualize_showcase(history, mass, tail_length=50)
