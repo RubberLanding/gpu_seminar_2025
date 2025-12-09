@@ -1,0 +1,19 @@
+name: nbody_numba
+channels:
+  - conda-forge
+  - nvidia        # Recommended: Explicitly add nvidia channel for CUDA tools
+dependencies:
+  - python=3.10   # Pin this to ensure compatibility (3.10 or 3.11 is safe)
+  
+  - ipykernel     # Required for VS Code to see the kernel
+  - ipympl        # Good for interactive plots in VS Code
+  - matplotlib    # For static plotting
+  - debugpy       # For debugging
+  
+  - numpy
+  - numba
+  - numba-cuda    # Key package for GPU acceleration
+  
+  # --- Optional: Explicit CUDA Toolkit ---
+  # If 'numba-cuda' fails to find drivers, uncomment the line below:
+  # - cuda-toolkit
