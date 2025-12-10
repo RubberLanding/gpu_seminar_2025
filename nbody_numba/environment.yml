@@ -9,7 +9,8 @@ dependencies:
   - ipympl        # Good for interactive plots in VS Code
   - matplotlib    # For static plotting
   - debugpy       # For debugging
-  
+  - pytest        # For testing
+
   - numpy
   - numba
   - numba-cuda    # Key package for GPU acceleration
