@@ -75,7 +75,7 @@ def test_kepler_orbit_accuracy():
     
     print(f"Testing Kepler: R={R:.0f}, v={v_circ:.2f}, Period={period:.2f}s, Steps={steps}")
 
-    pos_hist, _ = run_simulation(pos, vel, masses, dt=dt, steps=steps, device="cpu")
+    pos_hist, _ = run_simulation(pos, vel, masses, dt=dt, steps=steps, device="auto")
     
     # Compute the distance of Earth relative to the Sun
     rel_pos = pos_hist[:, 1, :] - pos_hist[:, 0, :]

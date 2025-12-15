@@ -222,5 +222,5 @@ if __name__ == "__main__":
     dt = 0.01
     steps = 100
     
-    res = run_simulation(pos, vel, mass, dt, steps, device="auto")
+    res = run_simulation(pos, vel, mass, dt, steps, device="gpu")
     print("Done.")
