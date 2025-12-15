@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nbody_simulation"
+version = "0.1.0"
+dependencies = [
+    "numpy",
+    "numba",
+    "matplotlib",  # Includes mpl_toolkits
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+gpu = ["numba-cuda"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

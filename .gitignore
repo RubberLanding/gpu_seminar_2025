@@ -13,3 +13,6 @@ __pycache__/
 
 # --- IDE Settings ---
 .vscode/
+
+*.txt
+PKG-INFO
