@@ -1,4 +1,4 @@
-name: nbody_numba
+name: nbody
 channels:
   - conda-forge
   - nvidia        # Recommended: Explicitly add nvidia channel for CUDA tools
