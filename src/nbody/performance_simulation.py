@@ -15,13 +15,13 @@ from nbody.numba_.simulation import cpu_force_kernel_numba, cpu_step_pos, cpu_st
 G = 6.67430e-11
 EPSILON = 1e-4
 
-# ... [KEEP ALL YOUR measure_time_* FUNCTIONS EXACTLY AS THEY ARE] ...
-# (I am hiding them here for brevity, but you should keep your existing function definitions)
-
 def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
+
+    # Empty cache before running big probem instances with lots of allocations
+    torch.cuda.empty_cache() 
 
     # Move data to GPU
     pos = torch.tensor(pos_host, device=device, dtype=torch.float64)
@@ -36,9 +36,8 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
     dt_half = 0.5 * dt_tensor
     inv_m = 1.0 / mass.unsqueeze(1)
     
-    # Warmup
+    # Sync before timing
     torch.cuda.synchronize() if device.type == 'cuda' else None
-
     start_time = time.perf_counter()
 
     with torch.no_grad():
@@ -56,19 +55,18 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
             force_old = force_new
 
     # Sync before timing
-    if device.type == 'cuda':
-        torch.cuda.synchronize()
-
+    torch.cuda.synchronize() if device.type == 'cuda' else None
     end_time = time.perf_counter()
+
     total_time = end_time - start_time
     steps_per_second = steps / total_time
-
+    interactions_per_second = steps * N * N / total_time
     print("-" * 30)
-    print(f"Total Runtime:    {total_time:.4f} seconds")
-    print(f"Performance:      {steps_per_second:.2f} steps/second")
+    print(f"Total Runtime:            {total_time:.4f} seconds")
+    print(f"Performance Steps:        {steps_per_second:.2f} steps/second")
+    print(f"Performance Interactions: {interactions_per_second:.2f} interactions/second")
     print("-" * 30, "\n")
-
-    return steps, total_time, steps_per_second 
+    return steps, total_time, steps_per_second, interactions_per_second
 
 def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps):
     N = pos_host.shape[0]
@@ -110,13 +108,13 @@ def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps):
     
     total_time = end_time - start_time
     steps_per_second = steps / total_time
-
+    interactions_per_second = steps * N * N / total_time
     print("-" * 30)
-    print(f"Total Runtime:    {total_time:.4f} seconds")
-    print(f"Performance:      {steps_per_second:.2f} steps/second")
+    print(f"Total Runtime:            {total_time:.4f} seconds")
+    print(f"Performance Steps:        {steps_per_second:.2f} steps/second")
+    print(f"Performance Interactions: {interactions_per_second:.2f} interactions/second")
     print("-" * 30, "\n")
-
-    return steps, total_time, steps_per_second 
+    return steps, total_time, steps_per_second, interactions_per_second
 
 def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"):
     N = pos_host.shape[0]
@@ -151,11 +149,13 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"
         
         total_time = end_time - start_time
         steps_per_second = steps / total_time
+        interactions_per_second = steps * N * N  / total_time
         print("-" * 30)
-        print(f"Total Runtime:    {total_time:.4f} seconds")
-        print(f"Performance:      {steps_per_second:.2f} steps/second")
-        print("-" * 30)
-        return steps, total_time, steps_per_second 
+        print(f"Total Runtime:            {total_time:.4f} seconds")
+        print(f"Performance Steps:        {steps_per_second:.2f} steps/second")
+        print(f"Performance Interactions: {interactions_per_second:.2f} interactions/second")
+        print("-" * 30, "\n")
+        return steps, total_time, steps_per_second, interactions_per_second
 
     else:
         print(f"Running on CPU (Numba). N={N}, Steps={steps}")
@@ -176,11 +176,13 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"
         end_time = time.perf_counter()
         total_time = end_time - start_time
         steps_per_second = steps / total_time
+        interactions_per_second = steps * N * N / total_time
         print("-" * 30)
-        print(f"Total Runtime:    {total_time:.4f} seconds")
-        print(f"Performance:      {steps_per_second:.2f} steps/second")
+        print(f"Total Runtime:            {total_time:.4f} seconds")
+        print(f"Performance Steps:        {steps_per_second:.2f} steps/second")
+        print(f"Performance Interactions: {interactions_per_second:.2f} interactions/second")
         print("-" * 30, "\n")
-        return steps, total_time, steps_per_second 
+        return steps, total_time, steps_per_second, interactions_per_second
 
 
 if __name__=="__main__":
