@@ -1,15 +1,10 @@
-# If you run the file directly from the terminal, 
-# use `PYTHONPATH=src python -s test/test.py` for the imports to work
-
 import numpy as np
 import math
 import pytest
 from numba import njit
 
-# Adjust imports based on your exact file structure
-# If using PYTHONPATH=src, these work:
-from simulation import run_simulation
-from visualization import generate_solar_system
+from nbody.cupy.simulation import run_simulation_cupy
+from nbody.visualization import generate_solar_system
 
 @njit
 def calculate_energy(pos, vel, masses, G, epsilon):
@@ -44,7 +39,7 @@ def analyze_energy(pos_history, vel_history, masses, G, epsilon):
         
     return energy_history
 
-def test_kepler_orbit_accuracy():
+def check_kepler_orbit(run_simulation):
     """
     Verifies that a 2-body system follows a stable circular orbit 
     and returns to the start after exactly one period.
@@ -75,7 +70,7 @@ def test_kepler_orbit_accuracy():
     
     print(f"Testing Kepler: R={R:.0f}, v={v_circ:.2f}, Period={period:.2f}s, Steps={steps}")
 
-    pos_hist, _ = run_simulation(pos, vel, masses, dt=dt, steps=steps, device="auto")
+    pos_hist, _ = run_simulation(pos, vel, masses, dt=dt, steps=steps)
     
     # Compute the distance of Earth relative to the Sun
     rel_pos = pos_hist[:, 1, :] - pos_hist[:, 0, :]
@@ -99,7 +94,7 @@ def test_kepler_orbit_accuracy():
     # Check Y coordinate (Should be back at 0)
     assert final_pos[1] == pytest.approx(0.0, abs=R * 0.05) 
 
-def test_energy_conservation():
+def check_energy_conservation(run_simulation):
     """
     Test that the energy is conserved.
     """
@@ -107,7 +102,7 @@ def test_energy_conservation():
     pos, vel, mass = generate_solar_system(N)
     
     n_steps = 400
-    pos_hist, vel_hist = run_simulation(pos, vel, mass, dt=0.001, steps=n_steps, device="auto")
+    pos_hist, vel_hist = run_simulation(pos, vel, mass, dt=0.001, steps=n_steps)
     energies = analyze_energy(pos_hist, vel_hist, mass, G=6.6743e-11, epsilon=1e-1)
 
     # Calculate drift
@@ -128,6 +123,6 @@ def test_energy_conservation():
     assert drift < 0.01
     
 if __name__ == "__main__":
-    test_kepler_orbit_accuracy()
-    test_energy_conservation()
+    check_kepler_orbit(run_simulation_cupy)
+    check_energy_conservation(run_simulation_cupy)
     print("Done.")
