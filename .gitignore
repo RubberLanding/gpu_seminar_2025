@@ -19,3 +19,8 @@ __pycache__/
 
 *.txt
 PKG-INFO
+
+# --- Profiling ---
+*.sqlite
+*.nsys-rep
+reports/

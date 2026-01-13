@@ -13,7 +13,9 @@ dependencies:
 
   - numpy
   - numba
-  - numba-cuda    # Key package for GPU acceleration
+  - numba-cuda   
+  - cupy
+  - pytorch
   
   # --- Optional: Explicit CUDA Toolkit ---
   # If 'numba-cuda' fails to find drivers, uncomment the line below:
