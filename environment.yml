@@ -1,7 +1,9 @@
 name: nbody
 channels:
+  - pytorch       # Explicitly add pytorch channel for pytorch-cuda
+  - nvidia        # Explicitly add nvidia channel for CUDA tools
   - conda-forge
-  - nvidia        # Recommended: Explicitly add nvidia channel for CUDA tools
+
 dependencies:
   - python=3.10   # Pin this to ensure compatibility (3.10 or 3.11 is safe)
   
@@ -12,10 +14,13 @@ dependencies:
   - pytest        # For testing
 
   - numpy
-  - numba
-  - numba-cuda   
   - cupy
-  - pytorch
+
+  - numba
+  - numba-cuda  
+
+  - pytorch::pytorch              # Forces package from 'pytorch' channel
+  - pytorch::pytorch-cuda=12.1    # Forces package from 'pytorch' channel
   
   # --- Optional: Explicit CUDA Toolkit ---
   # If 'numba-cuda' fails to find drivers, uncomment the line below:

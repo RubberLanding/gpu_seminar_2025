@@ -1,13 +1,11 @@
 import numpy as np
 from numba import njit, prange, float64, cuda
 import math
+import numba
 
 # --- Constants ---
 G = 6.6743e-11   # Gravitational Constant (m^3 kg^-1 s^-2)
 EPSILON = 1e-5
-
-def is_gpu_available():
-    return cuda.is_available()
 
 # --- CPU KERNELS ---
 @njit(parallel=True, fastmath=True)
@@ -74,7 +72,7 @@ def cpu_step_vel(v_vel, masses, F_old, F_new, dt):
         v_vel[i, 2] += (F_old[i, 2] + F_new[i, 2]) * inv_m * dt_half
 
 # --- GPU KERNELS ---
-if is_gpu_available():
+if cuda.is_available():
     @cuda.jit
     def gpu_force_kernel_numba(r_pos, masses, r_force):
         """CUDA Kernel for O(N^2) force calculation. One thread per particle."""
@@ -138,7 +136,7 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
                               If False, returns final state (pos, vel).
     """
     N = r_pos_host.shape[0]
-    use_gpu = (device == "gpu" or device == "auto") and is_gpu_available()
+    use_gpu = (device == "gpu" or device == "auto") and cuda.is_available()
     
     # Allocate history buffers on CPU to store intermediate results
     if store_history:
