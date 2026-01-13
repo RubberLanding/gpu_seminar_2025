@@ -18,6 +18,7 @@ __pycache__/
 .micromamba/
 
 *.txt
+*.png
 PKG-INFO
 
 # --- Profiling ---

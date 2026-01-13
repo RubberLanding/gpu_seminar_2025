@@ -1,10 +1,12 @@
 import time
 import math
-import argparse  # <--- Added for CLI args
+import argparse  
 import numba
 import torch 
 import cupy as cp
 import numpy as np
+import matplotlib.pyplot as plt
+
 
 from nbody.pytorch_.simulation import compute_forces_pytorch
 from nbody.cupy_.simulation import compute_forces_cupy
@@ -42,13 +44,13 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
 
     with torch.no_grad():
         # Initial Force
-        force_old = compute_forces_pytorch(pos, mass, G, EPSILON)
+        force_old = compute_forces_pytorch(pos, mass, G, EPSILON, chunk_size=256)
 
         for step in range(steps):
             # Update position
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
             # Upate forces
-            force_new = compute_forces_pytorch(pos, mass, G, EPSILON)
+            force_new = compute_forces_pytorch(pos, mass, G, EPSILON, chunk_size=256)
             # Update velocity
             vel += (force_old + force_new) * inv_m * dt_half
             # Swap references
@@ -184,30 +186,125 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"
         print("-" * 30, "\n")
         return steps, total_time, steps_per_second, interactions_per_second
 
+def cleanup_gpu():
+    """Clears memory for all libraries to ensure a fair start for the next benchmark."""
+    # Clear PyTorch
+    if 'torch' in globals():
+        torch.cuda.empty_cache()
+    
+    # Clear CuPy
+    if 'cp' in globals():
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+
+    # General Python Garbage Collection
+    import gc
+    gc.collect()
+
+def run_scaling_benchmark(args):
+    """
+    Runs a scaling benchmark for Numba from 10k to 300k bodies.
+    """
+    n_values = []
+    interactions_values = []
+    steps_values = []
+    simulation_func = None
+
+    if args.method == "numba":
+        simulation_func = measure_time_numba
+    if args.method == "torch":
+        simulation_func = measure_time_torch
+    if args.method == "cupy":
+        simulation_func = measure_time_cupy
+
+    print(f"Starting Scaling Benchmark (Method={args.method})...")
+    print(f"{'N':<10} | {'Runtime (s)':<12} | {'Interactions/s':<20}")
+    print("-" * 50)
+
+    for n in range(args.start, args.end, args.step):
+        # Re-initialize random data for every N
+        pos = np.random.rand(n, 3).astype(np.float64) * 100.0
+        vel = np.random.rand(n, 3).astype(np.float64) - 0.5
+        mass = np.random.rand(n).astype(np.float64) * 1e4
+        
+        # Run benchmark
+        _, total_time, steps_sec, interactions_sec = simulation_func(
+            pos, vel, mass, args.dt, args.steps)
+
+        # Store results
+        n_values.append(n)
+        interactions_values.append(interactions_sec)
+        steps_values.append(steps_sec)
+
+        # Print progress
+        print(f"{n:<10} | {total_time:<12.4f} | {interactions_sec:.2e}")
+
+        cleanup_gpu()
+
+    return n_values, interactions_values
+
+def plot_results(args, n_values, interactions_values):
+    """
+    Plots N vs Interactions Per Second.
+    """
+    plt.figure(figsize=(10, 6))
+    
+    # Plot Data
+    plt.plot(n_values, interactions_values, marker='o', linestyle='-', color='b', label=f'{args.method}')
+    
+    # Formatting
+    plt.title('N-Body Simulation Performance: Scaling with N', fontsize=14)
+    plt.xlabel('Number of Bodies (N)', fontsize=12)
+    plt.ylabel('Interactions per Second', fontsize=12)
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend()
+    
+    # Use Scientific Notation for Y-axis if numbers are huge
+    plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+    
+    # Save and Show
+    output_file = f'nbody_scaling_{args.method}.png'
+    plt.savefig(output_file)
+    print(f"\nPlot saved to {output_file}")
+    # plt.show() # Uncomment if running locally with a display
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(description="N-Body Simulation Benchmark")
     
     # Define arguments
     parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of bodies")
-    parser.add_argument("-s", "--steps", type=int, default=100, help="Number of simulation steps")
+    parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-m", "--method", type=str, choices=["numba", "torch", "cupy", "all"], default="numba", help="Method to use (numba, torch, cupy, or all)")
-    
+
+    # Benchmark args
+    parser.add_argument("--benchmark", action="store_true", help="Run the 10k-300k scaling loop") 
+    parser.add_argument("--start", type=int, default=10000, help="Start value for the number of particles (Benchmark)")
+    parser.add_argument("--end", type=int, default=310000, help="End value for the number of particles (Benchmark)")
+    parser.add_argument("--step", type=int, default=10000, help="Step size for the number of particles (Benchmark)")
+
     args = parser.parse_args()
 
-    # Generate Initial Data
-    print(f"Initializing {args.num_bodies} bodies...")
-    pos = np.random.rand(args.num_bodies, 3).astype(np.float64) * 100.0
-    vel = np.random.rand(args.num_bodies, 3).astype(np.float64) - 0.5
-    mass = np.random.rand(args.num_bodies).astype(np.float64) * 1e4
-    
-    # Run Benchmark
-    if args.method == "numba" or args.method == "all":
-        measure_time_numba(pos, vel, mass, args.dt, args.steps)
+    if args.benchmark:
+        ns, interact = run_scaling_benchmark(args)
+        plot_results(args, ns, interact)
+
+    else:
+        # Run a single evaluation step
+        print(f"Initializing {args.num_bodies} bodies...")
+        pos = np.random.rand(args.num_bodies, 3).astype(np.float64) * 100.0
+        vel = np.random.rand(args.num_bodies, 3).astype(np.float64) - 0.5
+        mass = np.random.rand(args.num_bodies).astype(np.float64) * 1e4
         
-    if args.method == "torch" or args.method == "all":
-        measure_time_torch(pos, vel, mass, args.dt, args.steps)
-        
-    if args.method == "cupy" or args.method == "all":
-        measure_time_cupy(pos, vel, mass, args.dt, args.steps)
+        if args.method == "numba" or args.method == "all":
+            steps, total_time, steps_per_second, interactions_per_second = measure_time_numba(pos, vel, mass, args.dt, args.steps)
+            cleanup_gpu()
+            
+        if args.method == "torch" or args.method == "all":
+            steps, total_time, steps_per_second, interactions_per_second = measure_time_torch(pos, vel, mass, args.dt, args.steps)
+            cleanup_gpu()
+            
+        if args.method == "cupy" or args.method == "all":
+            steps, total_time, steps_per_second, interactions_per_second = measure_time_cupy(pos, vel, mass, args.dt, args.steps)
+            cleanup_gpu()
+

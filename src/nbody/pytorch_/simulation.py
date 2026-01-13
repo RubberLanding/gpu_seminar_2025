@@ -5,7 +5,38 @@ import numpy as np
 G = 6.67430e-11
 EPSILON = 1e-4
 
-def compute_forces_pytorch(pos, mass, G, EPSILON):
+# Separate the calculation into smaller chunks to fit into RAM
+# def compute_forces_pytorch_(pos, mass, G, EPSILON, chunk_size=2048):
+#     N = pos.shape[0]
+#     forces = torch.zeros_like(pos)
+    
+#     # Iterate over chunks of 'target' particles
+#     for i in range(0, N, chunk_size):
+#         end_i = min(i + chunk_size, N)
+        
+#         # Shape (Chunk, 1, 3)
+#         pos_chunk = pos[i:end_i].unsqueeze(1)
+        
+#         # Shape (Chunk, N, 3)
+#         diff = pos.unsqueeze(0) - pos_chunk  
+        
+#         # Distance calculation
+#         dist_sq = torch.sum(diff**2, dim=-1) + EPSILON**2
+#         inv_dist_3 = dist_sq.pow(-1.5)
+        
+#         # The formula inside the sum is now: G * m_j * vec / r^3 (Acceleration)
+#         # Perform the sum to get total Acceleration on i
+#         accel_contribution = G * (diff * (inv_dist_3.unsqueeze(-1) * mass.unsqueeze(0).unsqueeze(-1)))
+#         total_accel = accel_contribution.sum(dim=1)
+        
+#         # Convert Acceleration to Force: F = m_i * a
+#         forces[i:end_i] = total_accel * mass[i:end_i].unsqueeze(-1)
+        
+#     return forces
+
+# Regular approach
+# Chunk size is a dummy argument and can be removed in later versions
+def compute_forces_pytorch_(pos, mass, G, EPSILON, chunk_size=2048):
     """
     Computes gravitational forces using vectorized PyTorch operations.
     Input shapes:
@@ -14,7 +45,7 @@ def compute_forces_pytorch(pos, mass, G, EPSILON):
     Output:
       force: (N, 3)
     """
-    # 1. Compute displacement vectors (N, N, 3)
+    # Compute displacement vectors (N, N, 3)
     # Using broadcasting: (N, 1, 3) - (1, N, 3)
     # diff[i, j] = pos[i] - pos[j]
     diff = pos.unsqueeze(1) - pos.unsqueeze(0)
@@ -30,12 +61,12 @@ def compute_forces_pytorch(pos, mass, G, EPSILON):
     # Handle self-interaction (diagonal) to avoid NaNs if epsilon=0
     inv_dist_cube.fill_diagonal_(0.0)
 
-    # 5. Compute acceleration contribution from j on i
+    # Compute acceleration contribution from j on i
     # Formula components: (r_i - r_j) * m_j / |r|^3
     # mass shape needs to be (1, N) to broadcast across columns j
     mass_j = mass.unsqueeze(0)
     
-    # We sum over j (dim 1) to get the total effect on i
+    # Sum over j (dim 1) to get the total effect on i
     # sum( diff_ij * (m_j * inv_dist_cube_ij) )
     # We use unsqueeze on the scalar factor to make it (N, N, 1) to multiply (N, N, 3)
     scalar_factor = (mass_j * inv_dist_cube).unsqueeze(-1)
@@ -48,6 +79,8 @@ def compute_forces_pytorch(pos, mass, G, EPSILON):
     force = -G * mass.unsqueeze(1) * ftmp
     
     return force
+
+compute_forces_pytorch = torch.compile(compute_forces_pytorch_) # JIT compile the Pytorch code
 
 def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history=True):
     # Set device
