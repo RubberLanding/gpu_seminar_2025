@@ -1,4 +1,5 @@
 import cupy as cp
+import numpy as np
 import math
 
 # Constants (Must be passed to kernel or hardcoded)
@@ -25,7 +26,7 @@ void compute_forces(const double* pos, const double* masses, double* force,
         double r_i_z = pos[i * 3 + 2];
         double m_i = masses[i];
 
-        // Loop over all other particles (J)
+        // Loop over all other particles
         for (int j = 0; j < N; j++) {
             double dx = r_i_x - pos[j * 3 + 0];
             double dy = r_i_y - pos[j * 3 + 1];
@@ -34,7 +35,6 @@ void compute_forces(const double* pos, const double* masses, double* force,
             double d2 = dx*dx + dy*dy + dz*dz;
             double dist = sqrt(d2 + EPSILON*EPSILON);
             
-            // Avoid division by zero if i == j (dist > epsilon handles this, but logic holds)
             double val = masses[j] / (dist * dist * dist);
 
             ftmp_x += dx * val;
@@ -52,65 +52,87 @@ void compute_forces(const double* pos, const double* masses, double* force,
 # Compile the kernel once
 compute_forces_gpu = cp.RawKernel(force_kernel_source, 'compute_forces')
 
-def step_simulation_cupy(r_pos, v_vel, masses, r_force, dt, N):
+def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=True):
     """
-    Main simulation step using CuPy.
+    Run the N-body simulation using CuPy.
     """
-    # Grid configuration
+    N = pos_host.shape[0]
+    
+    # Allocate history buffers on CPU to store intermediate results
+    if store_history:
+        pos_history = np.zeros((steps + 1, N, 3), dtype=np.float64)
+        vel_history = np.zeros((steps + 1, N, 3), dtype=np.float64)
+        # Store initial state
+        pos_history[0] = pos_host.copy()
+        vel_history[0] = vel_host.copy()
+    else:
+        pos_history = None
+        vel_history = None
+
+    print(f"Running on GPU (CuPy). N={N}, Steps={steps}")
+
+    # Move data to GPU using CuPy 
+    pos_device = cp.array(pos_host)
+    vel_device = cp.array(vel_host)
+    mass_device = cp.array(mass_host)
+
+    # Allocate force buffers on GPU
+    force_device_old = cp.zeros((N, 3), dtype=cp.float64)
+    force_device_new = cp.zeros((N, 3), dtype=cp.float64)
+
+    # Pre-calculate constants
+    # Reshape mass for broadcasting: (N,) -> (N, 1)
+    inv_m = 1.0 / mass_device[:, None]
+    dt2_half = 0.5 * dt * dt
+    dt_half = 0.5 * dt
+
+    # Grid configuration for the force kernel
     threads_per_block = 128
     blocks = (N + threads_per_block - 1) // threads_per_block
 
-    # --- STEP 1: FORCE CALCULATION (Using RawKernel) ---
-    # We pass the arrays directly. CuPy handles the pointers.
+    # Initial force calculation
     compute_forces_gpu(
         (blocks,), (threads_per_block,), 
-        (r_pos, masses, r_force, N, G, EPSILON)
+        (pos_device, mass_device, force_device_old, N, G, EPSILON)
     )
 
-    # --- STEP 2: POSITION UPDATE (Using Vectorized Operations) ---
-    # In CuPy, we replace the 'gpu_step_pos' kernel with array math.
-    # Note: masses[:, None] reshapes masses from (N,) to (N, 1) for broadcasting
-    inv_m = 1.0 / masses[:, None] 
-    dt2_half = 0.5 * dt * dt
+    for step in range(steps):
+        # Update position
+        pos_device += (vel_device * dt) + (force_device_old * inv_m * dt2_half)
+
+        # Update force 
+        compute_forces_gpu(
+            (blocks,), (threads_per_block,), 
+            (pos_device, mass_device, force_device_new, N, G, EPSILON)
+        )
+
+        # Update velocity
+        vel_device += (force_device_old + force_device_new) * inv_m * dt_half
+
+        # Store history 
+        if store_history:
+            pos_history[step + 1] = pos_device.get() 
+            vel_history[step + 1] = vel_device.get()
+
+
+        # Swap references
+        force_device_old, force_device_new = force_device_new, force_device_old
+
+    # Return results
+    if store_history:
+        return pos_history, vel_history
+    else:
+        return pos_device.get(), vel_device.get()
     
-    # Store F_old for the next velocity step (Verlet integration)
-    F_old = r_force.copy() 
-    
-    # Update Position: r = r + v*dt + a*0.5*dt^2
-    r_pos += (v_vel * dt) + (F_old * inv_m * dt2_half)
-
-    # --- STEP 3: RE-CALCULATE FORCES (New Position) ---
-    # Velocity Verlet requires force at t+1 to update velocity
-    F_new = cp.zeros_like(r_force)
-    compute_forces_gpu(
-        (blocks,), (threads_per_block,), 
-        (r_pos, masses, F_new, N, G, EPSILON)
-    )
-
-    # --- STEP 4: VELOCITY UPDATE (Using Vectorized Operations) ---
-    # v = v + 0.5 * (a_old + a_new) * dt
-    dt_half = 0.5 * dt
-    v_vel += (F_old + F_new) * inv_m * dt_half
-    
-    # Update the main force array for the next iteration
-    r_force[:] = F_new
-
-    return r_pos, v_vel, r_force
-
-# --- USAGE EXAMPLE ---
 if __name__ == "__main__":
-    N_PARTICLES = 1024
-    
-    # Initialize data on GPU directly using CuPy
-    pos = cp.random.rand(N_PARTICLES, 3).astype(cp.float64)
-    vel = cp.random.rand(N_PARTICLES, 3).astype(cp.float64)
-    mass = cp.ones(N_PARTICLES, dtype=cp.float64)
-    force = cp.zeros((N_PARTICLES, 3), dtype=cp.float64)
+    num_bodies = 2000
+    pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
+    vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
+    mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
     
     dt = 0.01
+    steps = 100
 
-    # Run one step
-    pos, vel, force = step_simulation_cupy(pos, vel, mass, force, dt, N_PARTICLES)
+    history_pos, history_vel = run_simulation_cupy(pos, vel, mass, dt, steps)
     
     print("Simulation step complete.")
-    print("New Position [0]:", pos[0])
