@@ -1,4 +1,4 @@
-from nbody.cupy.simulation import run_simulation_cupy
+from nbody.cupy_.simulation import run_simulation_cupy
 from tests.nbody.test_helpers import check_kepler_orbit, check_energy_conservation
     
 def test_kepler_orbit_cupy():

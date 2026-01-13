@@ -11,7 +11,7 @@ def is_gpu_available():
 
 # --- CPU KERNELS ---
 @njit(parallel=True, fastmath=True)
-def cpu_force_kernel(r_pos, masses, r_force):
+def cpu_force_kernel_numba(r_pos, masses, r_force):
     """
     Computes gravitational forces on CPU using O(N^2) all-to-all algorithm.
     Parallelized via OpenMP (prange).
@@ -76,7 +76,7 @@ def cpu_step_vel(v_vel, masses, F_old, F_new, dt):
 # --- GPU KERNELS ---
 if is_gpu_available():
     @cuda.jit
-    def gpu_force_kernel(r_pos, masses, r_force):
+    def gpu_force_kernel_numba(r_pos, masses, r_force):
         """CUDA Kernel for O(N^2) force calculation. One thread per particle."""
         N = r_pos.shape[0]
         i = cuda.grid(1)
@@ -167,14 +167,14 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
         d_F_new = cuda.device_array((N, 3), dtype=np.float64)
         
         # Initial force calculation
-        gpu_force_kernel[blocks, threads](d_pos, d_mass, d_F_old)
+        gpu_force_kernel_numba[blocks, threads](d_pos, d_mass, d_F_old)
         
         for step in range(steps):
             # Update position
             gpu_step_pos[blocks, threads](d_pos, d_vel, d_mass, d_F_old, dt)
             
             # Update force
-            gpu_force_kernel[blocks, threads](d_pos, d_mass, d_F_new)
+            gpu_force_kernel_numba[blocks, threads](d_pos, d_mass, d_F_new)
             
             # Update Velocity
             gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
@@ -201,12 +201,12 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
         F_old = np.zeros_like(r_pos)
         F_new = np.zeros_like(r_pos)
         
-        cpu_force_kernel(r_pos, masses, F_old)
+        cpu_force_kernel_numba(r_pos, masses, F_old)
         
         for step in range(steps):
             cpu_step_pos(r_pos, v_vel, masses, F_old, dt)  
 
-            cpu_force_kernel(r_pos, masses, F_new)
+            cpu_force_kernel_numba(r_pos, masses, F_new)
 
             cpu_step_vel(v_vel, masses, F_old, F_new, dt)
 

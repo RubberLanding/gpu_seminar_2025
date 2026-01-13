@@ -1,4 +1,4 @@
-from nbody.numba.simulation import run_simulation_numba
+from nbody.numba_.simulation import run_simulation_numba
 from tests.nbody.test_helpers import check_kepler_orbit, check_energy_conservation
     
 def test_kepler_orbit_numba():

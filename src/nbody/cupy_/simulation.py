@@ -50,7 +50,7 @@ void compute_forces(const double* pos, const double* masses, double* force,
 '''
 
 # Compile the kernel once
-compute_forces_gpu = cp.RawKernel(force_kernel_source, 'compute_forces')
+compute_forces_cupy = cp.RawKernel(force_kernel_source, 'compute_forces')
 
 def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=True):
     """
@@ -91,7 +91,7 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
     blocks = (N + threads_per_block - 1) // threads_per_block
 
     # Initial force calculation
-    compute_forces_gpu(
+    compute_forces_cupy(
         (blocks,), (threads_per_block,), 
         (pos_device, mass_device, force_device_old, N, G, EPSILON)
     )
@@ -101,7 +101,7 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
         pos_device += (vel_device * dt) + (force_device_old * inv_m * dt2_half)
 
         # Update force 
-        compute_forces_gpu(
+        compute_forces_cupy(
             (blocks,), (threads_per_block,), 
             (pos_device, mass_device, force_device_new, N, G, EPSILON)
         )

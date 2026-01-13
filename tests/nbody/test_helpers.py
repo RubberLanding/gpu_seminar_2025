@@ -3,7 +3,7 @@ import math
 import pytest
 from numba import njit
 
-from nbody.cupy.simulation import run_simulation_cupy
+from nbody.cupy_.simulation import run_simulation_cupy
 from nbody.visualization import generate_solar_system
 
 @njit

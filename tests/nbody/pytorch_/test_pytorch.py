@@ -1,4 +1,4 @@
-from nbody.pytorch.simulation import run_simulation_torch
+from nbody.pytorch_.simulation import run_simulation_torch
 from tests.nbody.test_helpers import check_kepler_orbit, check_energy_conservation
     
 def test_kepler_orbit_torch():
