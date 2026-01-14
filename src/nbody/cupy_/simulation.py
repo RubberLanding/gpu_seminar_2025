@@ -125,13 +125,13 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
         return pos_device.get(), vel_device.get()
     
 if __name__ == "__main__":
-    num_bodies = 2000
+    num_bodies = 70000
     pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
     vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
     mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
     
     dt = 0.01
-    steps = 100
+    steps = 20
 
     history_pos, history_vel = run_simulation_cupy(pos, vel, mass, dt, steps)
     

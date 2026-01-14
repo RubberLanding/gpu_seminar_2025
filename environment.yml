@@ -21,6 +21,10 @@ dependencies:
 
   - pytorch::pytorch              # Forces package from 'pytorch' channel
   - pytorch::pytorch-cuda=12.1    # Forces package from 'pytorch' channel
+
+  - pykeops              
+  - gxx_linux-64          # REQUIRED: The C++ compiler (gcc) for compiling kernels
+  - cmake                 # REQUIRED: Build system used by KeOps
   
   # --- Optional: Explicit CUDA Toolkit ---
   # If 'numba-cuda' fails to find drivers, uncomment the line below:

@@ -272,7 +272,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser(description="N-Body Simulation Benchmark")
     
     # Define arguments
-    parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of bodies")
+    parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-m", "--method", type=str, choices=["numba", "torch", "cupy", "all"], default="numba", help="Method to use (numba, torch, cupy, or all)")

@@ -218,13 +218,13 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
 
 # --- EXAMPLE USAGE ---
 if __name__ == "__main__":
-    num_bodies = 2000
+    num_bodies = 70000
     pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
     vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
     mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
     
     dt = 0.01
-    steps = 100
+    steps = 20
     
     res = run_simulation_numba(pos, vel, mass, dt, steps, device="gpu")
     print("Simulation step complete.")
