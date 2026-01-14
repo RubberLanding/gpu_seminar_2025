@@ -69,7 +69,7 @@ def check_kepler_orbit(run_simulation):
     
     print(f"Testing Kepler: R={R:.0f}, v={v_circ:.2f}, Period={period:.2f}s, Steps={steps}")
 
-    pos_hist, _ = run_simulation(pos, vel, masses, dt=dt, steps=steps)
+    pos_hist, _ = run_simulation(pos, vel, masses, dt=dt, steps=steps, store_history=True)
     
     # Compute the distance of Earth relative to the Sun
     rel_pos = pos_hist[:, 1, :] - pos_hist[:, 0, :]
@@ -104,26 +104,20 @@ def check_energy_conservation(run_simulation):
     mass = mass.astype(np.float32)
     
     n_steps = 400
-    pos_hist, vel_hist = run_simulation(pos, vel, mass, dt=0.001, steps=n_steps)
+    
+    pos_hist, vel_hist = run_simulation(pos, vel, mass, dt=0.001, steps=n_steps, store_history=True)
+    
     energies = analyze_energy(pos_hist, vel_hist, mass, G=6.6743e-11, epsilon=1e-1)
 
     # Calculate drift
-    drift = (np.max(energies) - np.min(energies)) / np.mean(np.abs(energies[1:n_steps])) 
+    # Avoid division by zero if energy is 0
+    mean_energy = np.mean(np.abs(energies[1:n_steps]))
+    drift = (np.max(energies) - np.min(energies)) / mean_energy
+    
     print(f"Energy Drift: {drift * 100:.6f}%")
 
-    # # Check visually
-    # import matplotlib.pyplot as plt
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(energies)
-    # plt.title("Total Energy over Time")
-    # plt.xlabel("Step")
-    # plt.ylabel("Energy (Joules)")
-    # plt.grid(True)
-    # plt.show()
-    
-    # Drift should be less than 1% for this setup
     assert drift < 0.01
-    
+
 if __name__ == "__main__":
     check_kepler_orbit(run_simulation_cupy)
     check_energy_conservation(run_simulation_cupy)
