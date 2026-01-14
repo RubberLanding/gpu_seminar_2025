@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from nbody.pytorch_.simulation import compute_forces_pytorch, compute_forces_pytorch_chunked, compute_forces_pytorch_keops
 from nbody.cupy_.simulation import compute_forces_cupy
-from nbody.numba_.simulation import gpu_force_kernel_numba, gpu_step_pos, gpu_step_vel
+from nbody.numba_.simulation import gpu_force_kernel_numba, gpu_force_kernel_numba_tiled, gpu_step_pos, gpu_step_vel
 from nbody.numba_.simulation import cpu_force_kernel_numba, cpu_step_pos, cpu_step_vel
 
 # Constants
@@ -119,13 +119,14 @@ def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps):
     print("-" * 30, "\n")
     return steps, total_time, steps_per_second, interactions_per_second
 
-def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"):
+def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, gpu_forces_func=gpu_force_kernel_numba_tiled, device="auto"):
     N = pos_host.shape[0]
     use_gpu = (device == "gpu" or device == "auto") and numba.cuda.is_available()
     
     if use_gpu:
         print(f"Running on GPU (Numba). N={N}, Steps={steps}")
-        threads = 256
+        print(f"Using Force Function: {gpu_forces_func.__name__}")
+        threads = 128 # When using `gpu_force_kernel_numba_tiled`, this must be the same value as in TPB in `simulation.py`
         blocks = math.ceil(N / threads)
 
         d_pos = numba.cuda.to_device(pos_host)
@@ -138,11 +139,11 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"
         numba.cuda.synchronize()
         start_time = time.perf_counter()
         
-        gpu_force_kernel_numba[blocks, threads](d_pos, d_mass, d_F_old)
+        gpu_forces_func[blocks, threads](d_pos, d_mass, d_F_old, G, EPSILON)
         
         for step in range(steps):
             gpu_step_pos[blocks, threads](d_pos, d_vel, d_mass, d_F_old, dt)
-            gpu_force_kernel_numba[blocks, threads](d_pos, d_mass, d_F_new)
+            gpu_forces_func[blocks, threads](d_pos, d_mass, d_F_new, G, EPSILON)
             gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
             d_F_old, d_F_new = d_F_new, d_F_old
         
