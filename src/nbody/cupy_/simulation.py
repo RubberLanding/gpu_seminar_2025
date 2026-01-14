@@ -60,8 +60,8 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
     
     # Allocate history buffers on CPU to store intermediate results
     if store_history:
-        pos_history = np.zeros((steps + 1, N, 3), dtype=np.float64)
-        vel_history = np.zeros((steps + 1, N, 3), dtype=np.float64)
+        pos_history = np.zeros((steps + 1, N, 3), dtype=np.float32)
+        vel_history = np.zeros((steps + 1, N, 3), dtype=np.float32)
         # Store initial state
         pos_history[0] = pos_host.copy()
         vel_history[0] = vel_host.copy()
@@ -77,8 +77,8 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
     mass_device = cp.array(mass_host)
 
     # Allocate force buffers on GPU
-    force_device_old = cp.zeros((N, 3), dtype=cp.float64)
-    force_device_new = cp.zeros((N, 3), dtype=cp.float64)
+    force_device_old = cp.zeros((N, 3), dtype=cp.float32)
+    force_device_new = cp.zeros((N, 3), dtype=cp.float32)
 
     # Pre-calculate constants
     # Reshape mass for broadcasting: (N,) -> (N, 1)
@@ -126,9 +126,9 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
     
 if __name__ == "__main__":
     num_bodies = 70000
-    pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
-    vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
-    mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
+    pos = np.random.rand(num_bodies, 3).astype(np.float32) * 100.0
+    vel = np.random.rand(num_bodies, 3).astype(np.float32) - 0.5
+    mass = np.random.rand(num_bodies).astype(np.float32) * 1e4
     
     dt = 0.01
     steps = 20

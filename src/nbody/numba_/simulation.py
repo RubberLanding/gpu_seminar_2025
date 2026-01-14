@@ -1,5 +1,5 @@
 import numpy as np
-from numba import njit, prange, float64, cuda
+from numba import njit, prange, float64, float32, cuda
 import math
 import numba
 
@@ -140,8 +140,8 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
     
     # Allocate history buffers on CPU to store intermediate results
     if store_history:
-        pos_history = np.zeros((steps + 1, N, 3), dtype=np.float64)
-        vel_history = np.zeros((steps + 1, N, 3), dtype=np.float64)
+        pos_history = np.zeros((steps + 1, N, 3), dtype=np.float32)
+        vel_history = np.zeros((steps + 1, N, 3), dtype=np.float32)
         # Store initial state
         pos_history[0] = r_pos_host.copy()
         vel_history[0] = v_vel_host.copy()
@@ -161,8 +161,8 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
         d_mass = cuda.to_device(masses_host)
 
         # Allocate force buffers on GPU
-        d_F_old = cuda.device_array((N, 3), dtype=np.float64)
-        d_F_new = cuda.device_array((N, 3), dtype=np.float64)
+        d_F_old = cuda.device_array((N, 3), dtype=np.float32)
+        d_F_new = cuda.device_array((N, 3), dtype=np.float32)
         
         # Initial force calculation
         gpu_force_kernel_numba[blocks, threads](d_pos, d_mass, d_F_old)
@@ -218,13 +218,18 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
 
 # --- EXAMPLE USAGE ---
 if __name__ == "__main__":
-    num_bodies = 70000
-    pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
-    vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
-    mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
+    parser = argparse.ArgumentParser(description="Numba N-Body Simulation")
+    parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")
+    parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
+    parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
+    args = parser.parse_args()
+
+    pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
+    vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
+    mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
     
-    dt = 0.01
-    steps = 20
+    print(f"Simulation with Numba. Initializing {args.num_bodies} bodies...")
+
+    run_simulation_numba(pos, vel, mass, args.dt, args.steps, store_history=False, gpu_force_func=gpu_force_kernel_numba_tiled)
     
-    res = run_simulation_numba(pos, vel, mass, dt, steps, device="gpu")
     print("Simulation step complete.")

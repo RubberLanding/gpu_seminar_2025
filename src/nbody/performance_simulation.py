@@ -26,14 +26,14 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
     torch.cuda.empty_cache() 
 
     # Move data to GPU
-    pos = torch.tensor(pos_host, device=device, dtype=torch.float64)
-    vel = torch.tensor(vel_host, device=device, dtype=torch.float64)
-    mass = torch.tensor(mass_host, device=device, dtype=torch.float64)
+    pos = torch.tensor(pos_host, device=device, dtype=torch.float32)
+    vel = torch.tensor(vel_host, device=device, dtype=torch.float32)
+    mass = torch.tensor(mass_host, device=device, dtype=torch.float32)
 
     N = pos.shape[0]
 
     # Pre-calculate constants
-    dt_tensor = torch.tensor(dt, device=device, dtype=torch.float64)
+    dt_tensor = torch.tensor(dt, device=device, dtype=torch.float32)
     dt2_half = 0.5 * dt_tensor * dt_tensor
     dt_half = 0.5 * dt_tensor
     inv_m = 1.0 / mass.unsqueeze(1)
@@ -80,8 +80,8 @@ def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps):
     mass_device = cp.array(mass_host)
 
     # Allocate force buffers on GPU
-    force_device_old = cp.zeros((N, 3), dtype=cp.float64)
-    force_device_new = cp.zeros((N, 3), dtype=cp.float64)
+    force_device_old = cp.zeros((N, 3), dtype=cp.float32)
+    force_device_new = cp.zeros((N, 3), dtype=cp.float32)
 
     # Pre-calculate constants
     inv_m = 1.0 / mass_device[:, None]
@@ -130,8 +130,8 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, device="auto"
         d_pos = numba.cuda.to_device(pos_host)
         d_vel = numba.cuda.to_device(vel_host)
         d_mass = numba.cuda.to_device(masses_host)
-        d_F_old = numba.cuda.device_array((N, 3), dtype=np.float64)
-        d_F_new = numba.cuda.device_array((N, 3), dtype=np.float64)
+        d_F_old = numba.cuda.device_array((N, 3), dtype=np.float32)
+        d_F_new = numba.cuda.device_array((N, 3), dtype=np.float32)
 
         # Sync before start
         numba.cuda.synchronize()
@@ -223,9 +223,9 @@ def run_scaling_benchmark(args):
 
     for n in range(args.start, args.end, args.step):
         # Re-initialize random data for every N
-        pos = np.random.rand(n, 3).astype(np.float64) * 100.0
-        vel = np.random.rand(n, 3).astype(np.float64) - 0.5
-        mass = np.random.rand(n).astype(np.float64) * 1e4
+        pos = np.random.rand(n, 3).astype(np.float32) * 100.0
+        vel = np.random.rand(n, 3).astype(np.float32) - 0.5
+        mass = np.random.rand(n).astype(np.float32) * 1e4
         
         # Run benchmark
         _, total_time, steps_sec, interactions_sec = simulation_func(
@@ -292,9 +292,9 @@ if __name__=="__main__":
     else:
         # Run a single evaluation step
         print(f"Initializing {args.num_bodies} bodies...")
-        pos = np.random.rand(args.num_bodies, 3).astype(np.float64) * 100.0
-        vel = np.random.rand(args.num_bodies, 3).astype(np.float64) - 0.5
-        mass = np.random.rand(args.num_bodies).astype(np.float64) * 1e4
+        pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
+        vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
+        mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
         
         if args.method == "numba" or args.method == "all":
             steps, total_time, steps_per_second, interactions_per_second = measure_time_numba(pos, vel, mass, args.dt, args.steps)

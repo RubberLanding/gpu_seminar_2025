@@ -88,16 +88,15 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
 
     # Move data to GPU
-    pos = torch.tensor(pos_host, device=device, dtype=torch.float64)
-    vel = torch.tensor(vel_host, device=device, dtype=torch.float64)
-    mass = torch.tensor(mass_host, device=device, dtype=torch.float64)
-
+    pos = torch.tensor(pos_host, device=device, dtype=torch.float32)
+    vel = torch.tensor(vel_host, device=device, dtype=torch.float32)
+    mass = torch.tensor(mass_host, device=device, dtype=torch.float32)
     N = pos.shape[0]
 
     # Allocate history buffers on CPU to store intermediate results
     if store_history:
-        pos_history = torch.zeros((steps + 1, N, 3), dtype=torch.float64)
-        vel_history = torch.zeros((steps + 1, N, 3), dtype=torch.float64)
+        pos_history = torch.zeros((steps + 1, N, 3), dtype=torch.float32)
+        vel_history = torch.zeros((steps + 1, N, 3), dtype=torch.float32)
         # Store initial state
         pos_history[0] = pos.cpu()
         vel_history[0] = vel.cpu()
@@ -106,7 +105,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history
         vel_history = None
 
     # Pre-calculate constants
-    dt_tensor = torch.tensor(dt, device=device, dtype=torch.float64)
+    dt_tensor = torch.tensor(dt, device=device, dtype=torch.float32)
     dt2_half = 0.5 * dt_tensor * dt_tensor
     dt_half = 0.5 * dt_tensor
     inv_m = 1.0 / mass.unsqueeze(1)
@@ -141,14 +140,18 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history
         return pos.cpu().numpy(), vel.cpu().numpy()
 
 if __name__ == "__main__":
-    num_bodies = 2000
-    pos = np.random.rand(num_bodies, 3).astype(np.float64) * 100.0
-    vel = np.random.rand(num_bodies, 3).astype(np.float64) - 0.5
-    mass = np.random.rand(num_bodies).astype(np.float64) * 1e4
-    
-    dt = 0.01
-    steps = 100
+    parser = argparse.ArgumentParser(description="Pytorch N-Body Simulation")
+    parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")
+    parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
+    parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
+    args = parser.parse_args()
 
-    hist_pos, hist_vel = run_simulation_torch(pos, vel, mass, dt, steps)
+    pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
+    vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
+    mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
+    
+    print(f"Simulation with Pytorch. Initializing {args.num_bodies} bodies...")
+
+    run_simulation_torch(pos, vel, mass, args.dt, args.steps, store_history=False)
     
     print("Simulation step complete.")
