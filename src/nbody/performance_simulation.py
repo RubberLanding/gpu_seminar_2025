@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-from nbody.pytorch_.simulation import compute_forces_pytorch
+from nbody.pytorch_.simulation import compute_forces_pytorch, compute_forces_pytorch_chunked, compute_forces_pytorch_keops
 from nbody.cupy_.simulation import compute_forces_cupy
 from nbody.numba_.simulation import gpu_force_kernel_numba, gpu_step_pos, gpu_step_vel
 from nbody.numba_.simulation import cpu_force_kernel_numba, cpu_step_pos, cpu_step_vel
@@ -17,10 +17,11 @@ from nbody.numba_.simulation import cpu_force_kernel_numba, cpu_step_pos, cpu_st
 G = 6.67430e-11
 EPSILON = 1e-4
 
-def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
+def measure_time_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_pytorch_keops):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
+    print(f"Using Force Function: {compute_forces_func.__name__}")
 
     # Empty cache before running big probem instances with lots of allocations
     torch.cuda.empty_cache() 
@@ -44,13 +45,13 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps):
 
     with torch.no_grad():
         # Initial Force
-        force_old = compute_forces_pytorch(pos, mass, G, EPSILON, chunk_size=256)
+        force_old = compute_forces_func(pos, mass, G, EPSILON)
 
         for step in range(steps):
             # Update position
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
             # Upate forces
-            force_new = compute_forces_pytorch(pos, mass, G, EPSILON, chunk_size=256)
+            force_new = compute_forces_func(pos, mass, G, EPSILON)
             # Update velocity
             vel += (force_old + force_new) * inv_m * dt_half
             # Swap references

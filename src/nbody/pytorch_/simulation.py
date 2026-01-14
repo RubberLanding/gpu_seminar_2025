@@ -1,42 +1,75 @@
 import torch
 import numpy as np
+import argparse
 
 # Constants
 G = 6.67430e-11
 EPSILON = 1e-4
 
 # Separate the calculation into smaller chunks to fit into RAM
-# def compute_forces_pytorch_(pos, mass, G, EPSILON, chunk_size=2048):
-#     N = pos.shape[0]
-#     forces = torch.zeros_like(pos)
+def compute_forces_pytorch_chunked_(pos, mass, G, EPSILON, chunk_size=128):
+    """
+    Optimized chunked force calculation.
+    Reduces peak VRAM usage by avoiding the explicit (Chunk, N, 3) acceleration tensor.
+    """
+    N = pos.shape[0]
+    forces = torch.empty_like(pos)
     
-#     # Iterate over chunks of 'target' particles
-#     for i in range(0, N, chunk_size):
-#         end_i = min(i + chunk_size, N)
+    # Pre-unsqueeze mass to (1, N) for broadcasting
+    mass_j = mass.unsqueeze(0) 
+
+    for i in range(0, N, chunk_size):
+        end_i = min(i + chunk_size, N)
         
-#         # Shape (Chunk, 1, 3)
-#         pos_chunk = pos[i:end_i].unsqueeze(1)
+        # Target particles (Chunk, 1, 3)
+        pos_chunk = pos[i:end_i].unsqueeze(1)
         
-#         # Shape (Chunk, N, 3)
-#         diff = pos.unsqueeze(0) - pos_chunk  
+        # Source particles (1, N, 3)
+        pos_all = pos.unsqueeze(0)
+
+        # Compute Diff (Chunk, N, 3)
+        diff = pos_all - pos_chunk  
         
-#         # Distance calculation
-#         dist_sq = torch.sum(diff**2, dim=-1) + EPSILON**2
-#         inv_dist_3 = dist_sq.pow(-1.5)
+        # Compute Distances
+        dist_sq = diff.pow(2).sum(dim=-1) + EPSILON**2
         
-#         # The formula inside the sum is now: G * m_j * vec / r^3 (Acceleration)
-#         # Perform the sum to get total Acceleration on i
-#         accel_contribution = G * (diff * (inv_dist_3.unsqueeze(-1) * mass.unsqueeze(0).unsqueeze(-1)))
-#         total_accel = accel_contribution.sum(dim=1)
+        # Compute Scalar Weight (Chunk, N)
+        # weight = m_j / (r^2 + eps^2)^1.5
+        scalar_weight = mass_j * dist_sq.pow(-1.5)
         
-#         # Convert Acceleration to Force: F = m_i * a
-#         forces[i:end_i] = total_accel * mass[i:end_i].unsqueeze(-1)
+        # Compute Weighted Sum directly
+        # We broadcast (Chunk, N, 1) * (Chunk, N, 3) and sum over N
+        # This re-uses the 'diff' memory tensor or registers without allocating a new big block
+        accel_chunk = (diff * scalar_weight.unsqueeze(-1)).sum(dim=1)
         
-#     return forces
+        # Apply constants
+        forces[i:end_i] = G * mass[i:end_i].unsqueeze(1) * accel_chunk
+        
+    return forces
+
+# IMPORTANT: nvcc must be available on the system before running this
+from pykeops.torch import LazyTensor
+def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
+    # x_i: target particles (N, 1, 3)
+    x_i = LazyTensor(pos[:, None, :])
+    # y_j: source particles (1, N, 3)
+    y_j = LazyTensor(pos[None, :, :])
+    # m_j: source masses (1, N, 1)
+    m_j = LazyTensor(mass[None, :, None])
+
+    # Symbolic computation (no memory allocated yet)
+    diff = x_i - y_j
+    sq_dist = (diff ** 2).sum(-1)
+    inv_dist_cube = (sq_dist + EPSILON**2).rsqrt() ** 3
+    
+    # The reduction happens here automatically in a fused CUDA kernel
+    ftmp = (diff * m_j * inv_dist_cube).sum(1)
+
+    return -G * mass.unsqueeze(1) * ftmp
 
 # Regular approach
 # Chunk size is a dummy argument and can be removed in later versions
-def compute_forces_pytorch_(pos, mass, G, EPSILON, chunk_size=2048):
+def compute_forces_pytorch_(pos, mass, G, EPSILON):
     """
     Computes gravitational forces using vectorized PyTorch operations.
     Input shapes:
@@ -58,9 +91,6 @@ def compute_forces_pytorch_(pos, mass, G, EPSILON, chunk_size=2048):
     dist = (dist_sq + EPSILON**2).sqrt()
     inv_dist_cube = dist.pow(-3)
 
-    # Handle self-interaction (diagonal) to avoid NaNs if epsilon=0
-    inv_dist_cube.fill_diagonal_(0.0)
-
     # Compute acceleration contribution from j on i
     # Formula components: (r_i - r_j) * m_j / |r|^3
     # mass shape needs to be (1, N) to broadcast across columns j
@@ -81,8 +111,9 @@ def compute_forces_pytorch_(pos, mass, G, EPSILON, chunk_size=2048):
     return force
 
 compute_forces_pytorch = torch.compile(compute_forces_pytorch_) # JIT compile the Pytorch code
+compute_forces_pytorch_chunked = torch.compile(compute_forces_pytorch_chunked_) # JIT compile the Pytorch code
 
-def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history=True):
+def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch, store_history=True):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
@@ -112,7 +143,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history
 
     with torch.no_grad():
         # Initial Force
-        force_old = compute_forces_pytorch(pos, mass, G, EPSILON)
+        force_old = compute_force_func(pos, mass, G, EPSILON)
 
         for step in range(steps):
             # Update position
@@ -120,7 +151,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, store_history
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
 
             # Upate forces
-            force_new = compute_forces_pytorch(pos, mass, G, EPSILON)
+            force_new = compute_force_func(pos, mass, G, EPSILON)
 
             # Update velocity
             # v(t+dt) = v(t) + 0.5 * (F(t) + F(t+dt))/m * dt
