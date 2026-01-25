@@ -24,4 +24,6 @@ PKG-INFO
 # --- Profiling ---
 *.sqlite
 *.nsys-rep
-reports/
+*.ncu-rep
+
+profiling_reports/
