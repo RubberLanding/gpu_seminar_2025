@@ -297,7 +297,6 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
             
         return (pos_history, vel_history) if store_history else (r_pos, v_vel)
 
-# --- EXAMPLE USAGE ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Numba N-Body Simulation")
     parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")

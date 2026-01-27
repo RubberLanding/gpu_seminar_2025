@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-from nbody.pytorch_.simulation import compute_forces_pytorch, compute_forces_pytorch_chunked, compute_forces_pytorch_keops
+from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops
 from nbody.cupy_.simulation import compute_forces_cupy
 from nbody.numba_.simulation import gpu_force_kernel_numba, gpu_force_kernel_numba_tiled, gpu_step_pos, gpu_step_vel
 from nbody.numba_.simulation import cpu_force_kernel_numba, cpu_step_pos, cpu_step_vel

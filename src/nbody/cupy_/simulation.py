@@ -1,6 +1,7 @@
 import cupy as cp
 import numpy as np
 import math
+import argparse
 
 # Constants (Must be passed to kernel or hardcoded)
 G = 6.67430e-11
@@ -10,32 +11,30 @@ EPSILON = 1e-4
 # We use RawKernel for the heavy lifting to keep memory usage low (O(N)).
 force_kernel_source = r'''
 extern "C" __global__
-void compute_forces(const double* pos, const double* masses, double* force, 
-                    int N, double G, double EPSILON) {
+void compute_forces(const float* pos, const float* masses, float* force, 
+                    int N, float G, float EPSILON) {
     
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (i < N) {
-        double ftmp_x = 0.0;
-        double ftmp_y = 0.0;
-        double ftmp_z = 0.0;
+        float ftmp_x = 0.0f;
+        float ftmp_y = 0.0f;
+        float ftmp_z = 0.0f;
         
-        // Load i-th particle data
-        double r_i_x = pos[i * 3 + 0];
-        double r_i_y = pos[i * 3 + 1];
-        double r_i_z = pos[i * 3 + 2];
-        double m_i = masses[i];
+        float r_i_x = pos[i * 3 + 0];
+        float r_i_y = pos[i * 3 + 1];
+        float r_i_z = pos[i * 3 + 2];
+        float m_i = masses[i];
 
-        // Loop over all other particles
         for (int j = 0; j < N; j++) {
-            double dx = r_i_x - pos[j * 3 + 0];
-            double dy = r_i_y - pos[j * 3 + 1];
-            double dz = r_i_z - pos[j * 3 + 2];
+            float dx = r_i_x - pos[j * 3 + 0];
+            float dy = r_i_y - pos[j * 3 + 1];
+            float dz = r_i_z - pos[j * 3 + 2];
 
-            double d2 = dx*dx + dy*dy + dz*dz;
-            double dist = sqrt(d2 + EPSILON*EPSILON);
+            float d2 = dx*dx + dy*dy + dz*dz;
+            float dist = sqrtf(d2 + EPSILON*EPSILON); // Note: sqrtf for float
             
-            double val = masses[j] / (dist * dist * dist);
+            float val = masses[j] / (dist * dist * dist);
 
             ftmp_x += dx * val;
             ftmp_y += dy * val;
@@ -52,7 +51,7 @@ void compute_forces(const double* pos, const double* masses, double* force,
 # Compile the kernel once
 compute_forces_cupy = cp.RawKernel(force_kernel_source, 'compute_forces')
 
-def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=True):
+def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=False):
     """
     Run the N-body simulation using CuPy.
     """
@@ -125,14 +124,18 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
         return pos_device.get(), vel_device.get()
     
 if __name__ == "__main__":
-    num_bodies = 70000
-    pos = np.random.rand(num_bodies, 3).astype(np.float32) * 100.0
-    vel = np.random.rand(num_bodies, 3).astype(np.float32) - 0.5
-    mass = np.random.rand(num_bodies).astype(np.float32) * 1e4
-    
-    dt = 0.01
-    steps = 20
+    parser = argparse.ArgumentParser(description="Cupy N-Body Simulation")
+    parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")
+    parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
+    parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
+    args = parser.parse_args()
 
-    history_pos, history_vel = run_simulation_cupy(pos, vel, mass, dt, steps)
+    pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
+    vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
+    mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
+    
+    print(f"Simulation with Numba. Initializing {args.num_bodies} bodies...")
+
+    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False)
     
     print("Simulation step complete.")
