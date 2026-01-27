@@ -1,3 +1,36 @@
+"""
+N-Body Simulation in PyTorch
+=======================================
+This module compares four approaches for calculating pairwise gravitational interactions using Pytorch. 
+
+1. Naive (Eager) Vectorization: `compute_forces_pytorch_naive_()`
+------------------------------
+The standard PyTorch 'Eager' approach using broadcasting to create an (N, N, 3) 
+displacement tensor. Only feasible for N ~ 60000, since the intermediate tensors like `diff` lead 
+to OOM. Every operation (+, -, *, pow) launches a separate CUDA kernel, forcing multiple round-trips to DRAM.
+
+
+2. Naive Compiled (torch.compile): `compute_forces_pytorch_naive()`
+---------------------------------
+Wraps the naive vectorized logic in `torch.compile()` to compile with Triton: `compiled_fn = torch.compile(naive_fn)`.
+Triton attempts tiling the workload. For N ~ 8000 this triggers `TRITON_MAX_BLOCK` errors. These can be (somewhat) circumvented 
+by increasing the max block size (see below).
+ 
+
+3. Chunked (Tiled) Approach: `compute_forces_pytorch_chunked_()`
+---------------------------
+Manually tiles the computation by iterating over chunks of the target particles 
+while broadcasting against all source particles. Can be compiled using Triton, available with `compute_forces_pytorch_chunked()`, while
+same limitations concerning the block size apply.
+
+
+4. PyKeOps (Symbolic Tensors): `compute_forces_pytorch_keops()`
+-----------------------------
+Uses the KeOps library to define a symbolic 'LazyTensor' reduction. Requires `nvcc` to be available. 
+Only approach that has O(N) memory complexity (instead of N^2) by performing the reduction in registers/SRAM, 
+bypassing DRAM bottlenecks almost entirely.
+"""
+
 import torch
 import numpy as np
 import argparse
@@ -5,6 +38,18 @@ import argparse
 # Constants
 G = 6.67430e-11
 EPSILON = 1e-4
+
+# Increase Tritons block size to enable running large simulations
+try:
+    from torch._inductor.runtime import triton_heuristics
+    triton_heuristics.TRITON_MAX_BLOCK["X"] = 4096
+except (ImportError, AttributeError, KeyError):
+    pass
+try:
+    from torch._inductor.runtime import hints
+    hints.TRITON_MAX_BLOCK["X"] = 4096
+except (ImportError, AttributeError, KeyError):
+    pass
 
 # Separate the calculation into smaller chunks to fit into RAM
 def compute_forces_pytorch_chunked_(pos, mass, G, EPSILON, chunk_size=128):
@@ -47,7 +92,8 @@ def compute_forces_pytorch_chunked_(pos, mass, G, EPSILON, chunk_size=128):
         
     return forces
 
-# IMPORTANT: nvcc must be available on the system before running this
+# IMPORTANT: nvcc must be available on the system before running this, e.g. by loading CUDA
+# Using PyKeOps to avoid allocating N^2 memory
 from pykeops.torch import LazyTensor
 def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
     # x_i: target particles (N, 1, 3)
@@ -69,7 +115,7 @@ def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
 
 # Regular approach
 # Chunk size is a dummy argument and can be removed in later versions
-def compute_forces_pytorch_(pos, mass, G, EPSILON):
+def compute_forces_pytorch_naive_(pos, mass, G, EPSILON):
     """
     Computes gravitational forces using vectorized PyTorch operations.
     Input shapes:
@@ -110,7 +156,7 @@ def compute_forces_pytorch_(pos, mass, G, EPSILON):
     
     return force
 
-compute_forces_pytorch = torch.compile(compute_forces_pytorch_) # JIT compile the Pytorch code
+compute_forces_pytorch = torch.compile(compute_forces_pytorch_naive_) # JIT compile the Pytorch code
 compute_forces_pytorch_chunked = torch.compile(compute_forces_pytorch_chunked_) # JIT compile the Pytorch code
 
 def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch, store_history=True):
