@@ -39,7 +39,7 @@ import argparse
 G = 6.67430e-11
 EPSILON = 1e-4
 
-# Increase Tritons block size to enable running large simulations
+# Increase Tritons block size to enable running simulation with N ~ 100,000
 try:
     from torch._inductor.runtime import triton_heuristics
     triton_heuristics.TRITON_MAX_BLOCK["X"] = 4096
@@ -156,10 +156,10 @@ def compute_forces_pytorch_naive_(pos, mass, G, EPSILON):
     
     return force
 
-compute_forces_pytorch = torch.compile(compute_forces_pytorch_naive_) # JIT compile the Pytorch code
+compute_forces_pytorch_naive = torch.compile(compute_forces_pytorch_naive_) # JIT compile the Pytorch code
 compute_forces_pytorch_chunked = torch.compile(compute_forces_pytorch_chunked_) # JIT compile the Pytorch code
 
-def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch, store_history=True):
+def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch_naive, store_history=True):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
