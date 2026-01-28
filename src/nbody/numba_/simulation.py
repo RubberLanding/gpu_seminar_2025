@@ -74,7 +74,7 @@ def cpu_step_vel(v_vel, masses, F_old, F_new, dt):
 
 # --- GPU KERNELS ---
 if cuda.is_available():
-    @cuda.jit
+    @cuda.jit(lineinfo=True)
     def gpu_force_kernel_numba(r_pos, masses, r_force, G, EPSILON):
         """CUDA Kernel for O(N^2) force calculation. One thread per particle."""
         N = r_pos.shape[0]
@@ -129,7 +129,7 @@ if cuda.is_available():
 
  # Tuning Parameters
 TPB = 128  # Threads Per Block (Must be multiple of 32)
-@cuda.jit(fastmath=True)
+@cuda.jit(fastmath=True, lineinfo=True)
 def gpu_force_kernel_numba_tiled(r_pos, masses, r_force, G, EPSILON):
     """
     Optimized Tiled N-body force calculation using Shared Memory.

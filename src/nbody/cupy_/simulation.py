@@ -113,7 +113,6 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, store_history=
             pos_history[step + 1] = pos_device.get() 
             vel_history[step + 1] = vel_device.get()
 
-
         # Swap references
         force_device_old, force_device_new = force_device_new, force_device_old
 

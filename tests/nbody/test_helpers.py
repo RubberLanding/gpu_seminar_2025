@@ -1,12 +1,10 @@
 import numpy as np
 import math
 import pytest
-from numba import njit
 
 from nbody.cupy_.simulation import run_simulation_cupy
 from nbody.visualization import generate_solar_system
 
-@njit
 def calculate_energy(pos, vel, masses, G, epsilon):
     """Calculates Total Energy (Kinetic + Potential)"""
     n = len(masses)
@@ -92,6 +90,8 @@ def check_kepler_orbit(run_simulation):
     
     # Check Y coordinate (Should be back at 0)
     assert final_pos[1] == pytest.approx(0.0, abs=R * 0.05) 
+
+    print("Pass Kepler orbit test.")
 
 def check_energy_conservation(run_simulation):
     """
