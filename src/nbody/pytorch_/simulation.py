@@ -36,6 +36,9 @@ import numpy as np
 import argparse
 from torch.cuda import nvtx
 
+# Keep the precision of float32 for the range but use the speed of float16 for the math
+torch.set_float32_matmul_precision('high')
+
 # Change Tritons block size depending on the size of the simulation 
 def set_triton_config(block_size):
     print(f"Setting TRITON_MAX_BLOCK['X'] to {block_size}...")
@@ -58,8 +61,9 @@ def set_triton_config(block_size):
 G = 6.67430e-11
 EPSILON = 1e-4
 
+@torch.compile(mode="max-autotune")
 # Separate the calculation into smaller chunks to fit into RAM
-def compute_forces_pytorch_chunked_(pos, mass, G, EPSILON, chunk_size=128):
+def compute_forces_pytorch_chunked(pos, mass, G, EPSILON, chunk_size=128):
     """
     Optimized chunked force calculation.
     Reduces peak VRAM usage by avoiding the explicit (Chunk, N, 3) acceleration tensor.
@@ -122,7 +126,8 @@ def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
 
 # Regular approach
 # Chunk size is a dummy argument and can be removed in later versions
-def compute_forces_pytorch_naive_(pos, mass, G, EPSILON):
+@torch.compile(mode="max-autotune")
+def compute_forces_pytorch_naive(pos, mass, G, EPSILON):
     """
     Computes gravitational forces using vectorized PyTorch operations.
     Input shapes:
@@ -163,10 +168,7 @@ def compute_forces_pytorch_naive_(pos, mass, G, EPSILON):
     
     return force
 
-compute_forces_pytorch_naive = torch.compile(compute_forces_pytorch_naive_) # JIT compile the Pytorch code
-compute_forces_pytorch_chunked = torch.compile(compute_forces_pytorch_chunked_) # JIT compile the Pytorch code
-
-def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch_keops, store_history=False):
+def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_matmul, store_history=False):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
@@ -205,7 +207,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
 
         for step in range(steps):
             nvtx.range_push("nbody_step")
-            
+
             # Update position
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
 
@@ -215,9 +217,14 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
             # Update velocity
             vel += (force_old + force_new) * inv_m * dt_half
 
+            # Store intermediate values
+            if store_history:
+                pos_history[step + 1] = pos.cpu()
+                vel_history[step + 1] = vel.cpu()
+
             # Swap references
             force_old = force_new
-            
+
             nvtx.range_pop()
 
     if store_history:
@@ -229,7 +236,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pytorch N-Body Simulation")
     parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
-    parser.add_argument("-t", "--triton-block_size", type=int, default=1028, help="Block size for Triton")
+    parser.add_argument("-t", "--triton-block_size", type=int, default=1024, help="Block size for Triton")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     args = parser.parse_args()
 
