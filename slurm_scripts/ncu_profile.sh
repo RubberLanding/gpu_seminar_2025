@@ -16,7 +16,7 @@ NUM_PARTICLES=${2:-100000}
 NUM_STEPS=${3:-10} 
 
 REPORT_DIR="$HOME/gpu_seminar_2025/profiling_reports/ncu"
-SCRIPT_PATH="$HOME/gpu_seminar_2025/src/nbody/${MODE}/simulation.py"
+SCRIPT_PATH="$HOME/gpu_seminar_2025/src/nbody/${MODE}_/simulation.py"
 
 mkdir -p "$REPORT_DIR"
 
@@ -35,7 +35,7 @@ module purge
 module load Stages/2025 
 module load GCCcore/.13.3.0
 module load Nsight-Compute/2024.3.2
-module load CUDA 
+module load CUDA
 
 source ~/.bashrc  
 micromamba activate nbody
@@ -45,13 +45,12 @@ NCU_EXTRA_FLAGS=""
 
 case $MODE in
     "numba")
-        # -k: Filter for Numba's JIT name. 
-        # --import-source: Maps Python lines to SASS in the GUI.
-        NCU_EXTRA_FLAGS="-k regex:.*gpu_force_kernel.* --import-source yes"
+        # Use single quotes for the variable and escaped/nested quotes for the path
+        NCU_EXTRA_FLAGS="-k regex:.*gpu_force_kernel.* --import-source yes --resolve-source-file \"$SCRIPT_PATH\""
         echo "Profiling Numba with LineInfo support..."
-        ;;
+        ;;    
     "cupy")
-        # Environment variable to prevent CuPy from deleting temp .cu files.
+    # Environment variable to prevent CuPy from deleting temp .cu files.
         export CUPY_CACHE_SAVE_CUDA_SOURCE=1
         NCU_EXTRA_FLAGS="--import-source yes"
         echo "Profiling CuPy with C++ source caching..."
@@ -77,7 +76,7 @@ ncu --section SpeedOfLight \
     --launch-count 1 \
     --target-processes all \
     $NCU_EXTRA_FLAGS \
-    -o "${REPORT_DIR}/nbody_profile_${MODE}" \
+    -o "${REPORT_DIR}/nbody_profile_nsys_${MODE}_${SLURM_JOB_ID}" \
     --force-overwrite \
     python "$SCRIPT_PATH" -n "$NUM_PARTICLES" --steps "$NUM_STEPS"
 
