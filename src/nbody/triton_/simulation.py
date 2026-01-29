@@ -51,7 +51,7 @@ def nbody_kernel_fast(
         # Softened distance squared
         dist_sq = dx*dx + dy*dy + dz*dz + (EPS * EPS)
         
-        # ESSENTIAL: Mask self-interaction (where i == j)
+        # Mask self-interaction (where i == j)
         # We check if the row index matches the column index
         is_self = row_offsets[:, None] == j_offsets[None, :]
         
@@ -79,7 +79,7 @@ def nbody_kernel_fast(
     tl.store(out_ptr + row_offsets * 3 + 1, final_ay, mask=mask)
     tl.store(out_ptr + row_offsets * 3 + 2, final_az, mask=mask)
 
-def compute_forces_triton(pos, mass, G, EPSILON):
+def compute_forces_triton_naive(pos, mass, G, EPSILON):
     N = pos.shape[0]
     accel_out = torch.empty_like(pos)
     BLOCK_SIZE = 32 
@@ -93,7 +93,7 @@ def compute_forces_triton(pos, mass, G, EPSILON):
     )
     return accel_out
 
-def run_simulation_triton(pos_host, vel_host, mass_host, dt, steps, store_history=False):
+def run_simulation_triton(pos_host, vel_host, mass_host, dt, steps, force_func=compute_forces_triton_naive, store_history=False):
     device = torch.device("cuda")
     N = pos_host.shape[0]
     
@@ -113,14 +113,14 @@ def run_simulation_triton(pos_host, vel_host, mass_host, dt, steps, store_histor
     dt_half = 0.5 * dt
 
     # Initial force
-    acc_old = compute_forces_triton(pos, mass, G_CONST, EPSILON_CONST)
+    acc_old = force_func(pos, mass, G_CONST, EPSILON_CONST)
     
     for step in range(steps):
         # Velocity Verlet: pos(t+dt) = pos(t) + v(t)dt + 0.5*a(t)dt^2
         pos += (vel * dt) + (acc_old * dt2_half)
 
         # Update Acceleration
-        acc_new = compute_forces_triton(pos, mass, G_CONST, EPSILON_CONST)
+        acc_new = force_func(pos, mass, G_CONST, EPSILON_CONST)
 
         # Velocity Verlet: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
         vel += (acc_old + acc_new) * dt_half
@@ -149,6 +149,6 @@ if __name__ == "__main__":
     
     print(f"Running on GPU (Triton). N={args.num_bodies}, Steps={args.steps}")
     
-    run_simulation_triton(pos, vel, mass, args.dt, args.steps, store_history=False)
+    run_simulation_triton(pos, vel, mass, args.dt, args.steps)
     
     print("Simulation complete.")

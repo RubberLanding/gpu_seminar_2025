@@ -8,74 +8,9 @@ import argparse
 G = 6.6743e-11   # Gravitational Constant (m^3 kg^-1 s^-2)
 EPSILON = 1e-5
 
-# --- CPU KERNELS ---
-@njit(parallel=True, fastmath=True)
-def cpu_force_kernel_numba(r_pos, masses, r_force):
-    """
-    Computes gravitational forces on CPU using O(N^2) all-to-all algorithm.
-    Parallelized via OpenMP (prange).
-    """
-    N = r_pos.shape[0]
-    r_force[:] = 0.0
-    
-    for i in prange(N):
-        ftmp_x = ftmp_y = ftmp_z = 0.0
-        r_i_x, r_i_y, r_i_z = r_pos[i, 0], r_pos[i, 1], r_pos[i, 2]
-        m_i = masses[i]
-
-        for j in range(N):
-            dx = r_i_x - r_pos[j, 0]
-            dy = r_i_y - r_pos[j, 1]
-            dz = r_i_z - r_pos[j, 2]
-            
-            d2 = dx*dx + dy*dy + dz*dz
-            
-            # Plummer Softening: prevents division by zero if particles overlap
-            dist = math.sqrt(d2 + EPSILON**2)
-            
-            # Force Magnitude: F = (G * m_i * m_j) / dist^3 * vector_r
-            F_ij_factor = masses[j] / (dist * dist * dist)
-            
-            ftmp_x += dx * F_ij_factor
-            ftmp_y += dy * F_ij_factor
-            ftmp_z += dz * F_ij_factor
-
-        r_force[i, 0] = -G * m_i * ftmp_x
-        r_force[i, 1] = -G * m_i * ftmp_y
-        r_force[i, 2] = -G * m_i * ftmp_z
-
-@njit(parallel=True, fastmath=True)
-def cpu_step_pos(r_pos, v_vel, masses, F_old, dt):
-    """
-    Velocity Verlet Step 1: Update Position.
-    r(t+dt) = r(t) + v(t)dt + 0.5 * a(t)dt^2
-    """
-    N = r_pos.shape[0]
-    dt2_half = 0.5 * dt * dt
-    for i in prange(N):
-        inv_m = 1.0 / masses[i]
-        r_pos[i, 0] += v_vel[i, 0] * dt + (F_old[i, 0] * inv_m) * dt2_half
-        r_pos[i, 1] += v_vel[i, 1] * dt + (F_old[i, 1] * inv_m) * dt2_half
-        r_pos[i, 2] += v_vel[i, 2] * dt + (F_old[i, 2] * inv_m) * dt2_half
-
-@njit(parallel=True, fastmath=True)
-def cpu_step_vel(v_vel, masses, F_old, F_new, dt):
-    """
-    Velocity Verlet Step 2: Update Velocity.
-    v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt)) * dt
-    """
-    N = v_vel.shape[0]
-    dt_half = 0.5 * dt
-    for i in prange(N):
-        inv_m = 1.0 / masses[i]
-        v_vel[i, 0] += (F_old[i, 0] + F_new[i, 0]) * inv_m * dt_half
-        v_vel[i, 1] += (F_old[i, 1] + F_new[i, 1]) * inv_m * dt_half
-        v_vel[i, 2] += (F_old[i, 2] + F_new[i, 2]) * inv_m * dt_half
-
-# --- GPU KERNELS ---
 if cuda.is_available():
     @cuda.jit(lineinfo=True)
-    def gpu_force_kernel_numba(r_pos, masses, r_force, G, EPSILON):
+    def compute_forces_numba_naive(r_pos, masses, r_force, G, EPSILON):
         """CUDA Kernel for O(N^2) force calculation. One thread per particle."""
         N = r_pos.shape[0]
         i = cuda.grid(1)
@@ -130,7 +65,7 @@ if cuda.is_available():
  # Tuning Parameters
 TPB = 128  # Threads Per Block (Must be multiple of 32)
 @cuda.jit(fastmath=True, lineinfo=True)
-def gpu_force_kernel_numba_tiled(r_pos, masses, r_force, G, EPSILON):
+def compute_forces_numba_tiled(r_pos, masses, r_force, G, EPSILON):
     """
     Optimized Tiled N-body force calculation using Shared Memory.
     Drastically reduces global memory bandwidth pressure.
@@ -207,7 +142,7 @@ def gpu_force_kernel_numba_tiled(r_pos, masses, r_force, G, EPSILON):
         r_force[i, 1] = G * m_i * acc_y
         r_force[i, 2] = G * m_i * acc_z
 
-def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device="auto", store_history=True, gpu_force_func=gpu_force_kernel_numba_tiled):
+def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device="auto", store_history=True, force_func=compute_forces_numba_naive):
     """
     Run the N-body simulation using Numba.
     
@@ -230,73 +165,45 @@ def run_simulation_numba(r_pos_host, v_vel_host, masses_host, dt, steps, device=
         pos_history = None
         vel_history = None
 
-    # Run on GPU
-    if use_gpu:
-        print(f"Running on GPU (Numba). N={N}, Steps={steps}")
-        threads = TPB
-        blocks = math.ceil(N / threads)
+    print(f"Running on GPU (Numba). N={N}, Steps={steps}")
+    threads = TPB
+    blocks = math.ceil(N / threads)
 
-        # Move data to GPU
-        d_pos = cuda.to_device(r_pos_host)
-        d_vel = cuda.to_device(v_vel_host)
-        d_mass = cuda.to_device(masses_host)
+    # Move data to GPU
+    d_pos = cuda.to_device(r_pos_host)
+    d_vel = cuda.to_device(v_vel_host)
+    d_mass = cuda.to_device(masses_host)
 
-        # Allocate force buffers on GPU
-        d_F_old = cuda.device_array((N, 3), dtype=np.float32)
-        d_F_new = cuda.device_array((N, 3), dtype=np.float32)
+    # Allocate force buffers on GPU
+    d_F_old = cuda.device_array((N, 3), dtype=np.float32)
+    d_F_new = cuda.device_array((N, 3), dtype=np.float32)
+    
+    # Initial force calculation
+    force_func[blocks, threads](d_pos, d_mass, d_F_old, G, EPSILON)
+    
+    for step in range(steps):
+        # Update position
+        gpu_step_pos[blocks, threads](d_pos, d_vel, d_mass, d_F_old, dt)
         
-        # Initial force calculation
-        gpu_force_func[blocks, threads](d_pos, d_mass, d_F_old, G, EPSILON)
+        # Update force
+        force_func[blocks, threads](d_pos, d_mass, d_F_new, G, EPSILON)
         
-        for step in range(steps):
-            # Update position
-            gpu_step_pos[blocks, threads](d_pos, d_vel, d_mass, d_F_old, dt)
-            
-            # Update force
-            gpu_force_func[blocks, threads](d_pos, d_mass, d_F_new, G, EPSILON)
-            
-            # Update Velocity
-            gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
+        # Update Velocity
+        gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
 
-            # Store history
-            if store_history:
-                d_pos.copy_to_host(pos_history[step+1])
-                d_vel.copy_to_host(vel_history[step+1])
-            
-            # Swap references
-            d_F_old, d_F_new = d_F_new, d_F_old
-            
+        # Store history
         if store_history:
-            return pos_history, vel_history
-        else:
-            return (d_pos.copy_to_host(), d_vel.copy_to_host())
+            d_pos.copy_to_host(pos_history[step+1])
+            d_vel.copy_to_host(vel_history[step+1])
         
-    # Run on CPU
+        # Swap references
+        d_F_old, d_F_new = d_F_new, d_F_old
+        
+    if store_history:
+        return pos_history, vel_history
     else:
-        print(f"Running on CPU. N={N}, Steps={steps}")
-        r_pos = r_pos_host.copy()
-        v_vel = v_vel_host.copy()
-        masses = masses_host
-        F_old = np.zeros_like(r_pos)
-        F_new = np.zeros_like(r_pos)
-        
-        cpu_force_kernel_numba(r_pos, masses, F_old)
-        
-        for step in range(steps):
-            cpu_step_pos(r_pos, v_vel, masses, F_old, dt)  
-
-            cpu_force_kernel_numba(r_pos, masses, F_new)
-
-            cpu_step_vel(v_vel, masses, F_old, F_new, dt)
-
-            if store_history:
-                pos_history[step+1] = r_pos.copy()
-                vel_history[step+1] = v_vel.copy()            
-
-            F_old[:] = F_new[:] 
-            
-        return (pos_history, vel_history) if store_history else (r_pos, v_vel)
-
+        return (d_pos.copy_to_host(), d_vel.copy_to_host())
+                    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Numba N-Body Simulation")
     parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")
@@ -310,6 +217,6 @@ if __name__ == "__main__":
     
     print(f"Simulation with Numba. Initializing {args.num_bodies} bodies...")
 
-    run_simulation_numba(pos, vel, mass, args.dt, args.steps, store_history=False, gpu_force_func=gpu_force_kernel_numba_tiled)
+    run_simulation_numba(pos, vel, mass, args.dt, args.steps, store_history=False, gpu_force_func=compute_forces_numba_tiled)
     
     print("Simulation step complete.")

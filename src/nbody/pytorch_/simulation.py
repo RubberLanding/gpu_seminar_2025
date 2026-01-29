@@ -43,19 +43,26 @@ torch.set_float32_matmul_precision('high')
 def set_triton_config(block_size):
     print(f"Setting TRITON_MAX_BLOCK['X'] to {block_size}...")
     
-    # Patch triton_heuristics
     try:
         from torch._inductor.runtime import triton_heuristics
         triton_heuristics.TRITON_MAX_BLOCK["X"] = block_size
     except (ImportError, AttributeError, KeyError):
         print("Warning: Could not patch triton_heuristics")
-
-    # Patch hints (for newer PyTorch versions)
     try:
         from torch._inductor.runtime import hints
         hints.TRITON_MAX_BLOCK["X"] = block_size
     except (ImportError, AttributeError, KeyError):
         print("Warning: Could not patch hints")
+    # try:
+    #     import torch._inductor.config as config
+    #     # This forces the compiler to use cuBLAS instead of generating Triton kernels for matmuls
+    #     config.freezing = True
+    #     config.triton.desugared_library_calls = True
+    #     # This is the "Magic" flag that stops Inductor from trying to out-think cuBLAS
+    #     config.coordinate_descent_tuning = True
+    # except (ImportError, AttributeError, KeyError):
+    #     print("Warning: Could not patch config")
+
 
 # Constants
 G = 6.67430e-11
@@ -124,51 +131,76 @@ def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
 
     return -G * mass.unsqueeze(1) * ftmp
 
+@torch.compile(mode="max-autotune")
+def compute_forces_pytorch_matmul(pos, mass, G, EPSILON):
+    N = pos.shape[0]
+    
+    # 1. Squared Distances - This is our ONE allowed giant buffer (23.8 GiB)
+    dot_pos = torch.sum(pos**2, dim=1, keepdim=True)
+    # We use aten.mm but immediately start reusing the result
+    res = torch.ops.aten.mm(pos, pos.t()) 
+    
+    # In-place transform 'res' into 'dist_sq'
+    # dist_sq = dot_pos + dot_pos.t() - 2.0 * res
+    res.mul_(-2.0).add_(dot_pos).add_(dot_pos.t())
+    res.clamp_(min=0) # Now 'res' is dist_sq
+    
+    # 2. In-place transform 'dist_sq' into 'inv_dist_cube'
+    res.add_(EPSILON**2).pow_(-1.5).mul_(G)
+    
+    # 3. Mask the diagonal WITHOUT creating a new matrix
+    res.fill_diagonal_(0.0)
+    
+    # 4. Apply SOURCE masses (m_j) in-place
+    # 'res' now becomes the 'weights' matrix
+    res.mul_(mass.view(1, -1))
+
+    # 5. Final vector math
+    # Term 1: uses the weights matrix (res)
+    term1 = torch.mm(res, pos) 
+    # Term 2: reduction happens on the same buffer
+    term2 = pos * res.sum(dim=1, keepdim=True)
+    
+    return mass.view(-1, 1) * (term1 - term2)
+
+@torch.compile(mode="max-autotune")
+def compute_forces_pytorch_optimized(pos, mass, G, EPSILON):
+    dot_pos = torch.sum(pos**2, dim=1, keepdim=True)
+    # This is the "Heavy Lifting" - GEMM is 10x faster than broadcasting subtraction
+    dist_sq = dot_pos + dot_pos.t() - 2.0 * torch.mm(pos, pos.t())
+    
+    inv_dist_cube = (dist_sq.clamp(min=0) + EPSILON**2).pow(-1.5)
+    
+    # Functional mask to avoid the OOM from torch.eye
+    # We only zero the diagonal
+    weights = (inv_dist_cube * mass[None, :]) * G
+    mask = torch.eye(weights.shape[0], device=weights.device).logical_not()
+    weights = weights * mask
+
+    term1 = torch.mm(weights, pos)
+    term2 = pos * weights.sum(dim=1, keepdim=True)
+    
+    return mass[:, None] * (term1 - term2)
+
 # Regular approach
 # Chunk size is a dummy argument and can be removed in later versions
 @torch.compile(mode="max-autotune")
 def compute_forces_pytorch_naive(pos, mass, G, EPSILON):
-    """
-    Computes gravitational forces using vectorized PyTorch operations.
-    Input shapes:
-      pos:  (N, 3)
-      mass: (N,)
-    Output:
-      force: (N, 3)
-    """
-    # Compute displacement vectors (N, N, 3)
-    # Using broadcasting: (N, 1, 3) - (1, N, 3)
-    # diff[i, j] = pos[i] - pos[j]
     diff = pos.unsqueeze(1) - pos.unsqueeze(0)
 
-    # Compute squared distances
     dist_sq = (diff ** 2).sum(dim=-1)
-
-    # Compute inverse cubed distance with softening
-    # (r^2 + epsilon^2)^(-1.5)
     dist = (dist_sq + EPSILON**2).sqrt()
-    inv_dist_cube = dist.pow(-3)
 
-    # Compute acceleration contribution from j on i
-    # Formula components: (r_i - r_j) * m_j / |r|^3
-    # mass shape needs to be (1, N) to broadcast across columns j
+    inv_dist_cube = dist.pow(-3)
     mass_j = mass.unsqueeze(0)
     
-    # Sum over j (dim 1) to get the total effect on i
-    # sum( diff_ij * (m_j * inv_dist_cube_ij) )
-    # We use unsqueeze on the scalar factor to make it (N, N, 1) to multiply (N, N, 3)
     scalar_factor = (mass_j * inv_dist_cube).unsqueeze(-1)
-    
-    # Sum over j
     ftmp = (diff * scalar_factor).sum(dim=1)
-
-    # Force = -G * m_i * ftmp
-    # mass needs to be (N, 1) for i
     force = -G * mass.unsqueeze(1) * ftmp
     
     return force
 
-def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_matmul, store_history=False):
+def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch_naive, store_history=False):
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
@@ -200,7 +232,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
         # Initial Force
         nvtx.range_push("warmup_compile")
 
-        force_old = compute_force_func(pos, mass, G, EPSILON)
+        force_old = compute_force_func(pos, mass, G, EPSILON).clone()
         
         torch.cuda.synchronize() # Ensure compilation is done before closing range
         nvtx.range_pop()
@@ -212,7 +244,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
 
             # Update forces
-            force_new = compute_force_func(pos, mass, G, EPSILON)
+            force_new = compute_force_func(pos, mass, G, EPSILON).clone()
 
             # Update velocity
             vel += (force_old + force_new) * inv_m * dt_half
