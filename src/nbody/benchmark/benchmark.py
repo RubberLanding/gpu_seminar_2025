@@ -214,6 +214,7 @@ if __name__== "__main__":
                                                                  "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
                                                                  "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"],
                                                                  help="The force function that is being used, e.g. `gpu_force_kernel_numba_naive` for Numba.")
+
     args = parser.parse_args()
 
     # Mapping of framework name to its measure function and allowed force kernels
@@ -283,7 +284,7 @@ if __name__== "__main__":
             res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps, compute_forces_func=force_func)
         else:
             res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps)
-        
+
         # Cleanup GPU memory between different framework runs
         cleanup_gpu()
         if len(methods_to_run) > 1 : print("-" * 20 + "\n")

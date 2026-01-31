@@ -1,4 +1,4 @@
-import csv
+import json
 import torch
 import datetime 
 import cupy as cp
@@ -51,41 +51,50 @@ def cleanup_gpu():
     import gc
     gc.collect()
 
-def create_report(method, report_base_dir="scaling_reports"):
+def create_report(force_method, report_base_dir="scaling_reports"):
     """
     Creates a folder and saves the benchmark data as a CSV using Pathlib.
     """
-    # Create the timestamped folder path object
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    report_folder = Path(report_base_dir) / f"{method}_{timestamp}"
-    
-    # mkdir -p: parents=True ensures 'reports/' is created if it doesn't exist
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_folder = Path(report_base_dir) / f"{force_method}_{timestamp}"
     report_folder.mkdir(parents=True, exist_ok=True)
 
-    return report_folder
+    return report_folder, timestamp
 
-def store_results(report_folder, n_values, interactions_values):
+def store_results(force_func, res, timestamp, report_folder):
     """
-    Wrapper to store the results as a .csv file in the given report folder.
+    Stores the results dictionary as a .json file with metadata.
     """
-    file_path = report_folder / "scaling_results.csv"
-    with file_path.open(mode='w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["N", "Interactions_Per_Sec"])
-        for n, interaction in zip(n_values, interactions_values):
-            writer.writerow([n, interaction])  
+    # 1. Prepare unique filename
+    file_path = report_folder / f"benchmark.json"
+
+    # 2. Add metadata (optional but very helpful for future you)
+    output_data = {
+        "metadata": {
+            "method": force_func,
+            "timestamp": timestamp,
+        },
+        "data": res  # This is your dictionary of lists
+    }
+
+    # 3. Write to file
+    with file_path.open(mode='w', encoding='utf-8') as f:
+        # indent=4 makes the file human-readable
+        json.dump(output_data, f, indent=4)
+
     print(f"\n[✔] Benchmark data saved to: {file_path.resolve()}")
+    
+    # Returning the data dict so you can still use it for plotting
+    return res
 
-    return n_values, interactions_values
-
-def plot_results(args, n_values, interactions_values, report_folder):
+def plot_results(force_func, n_values, interactions_values, report_folder):
     """
     Plots N vs Interactions Per Second.
     """
     plt.figure(figsize=(10, 6))
     
     # Plot Data
-    plt.plot(n_values, interactions_values, marker='o', linestyle='-', color='b', label=f'{args.method}')
+    plt.plot(n_values, interactions_values, marker='o', linestyle='-', color='b', label=f'{force_func}')
     
     # Formatting
     plt.title('N-Body Simulation Performance: Scaling with N', fontsize=14)
@@ -98,7 +107,7 @@ def plot_results(args, n_values, interactions_values, report_folder):
     plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
     
     # Save and Show
-    img_path = report_folder / f'nbody_scaling_{args.method}.png'
+    img_path = report_folder / f'nbody_scaling.png'
     plt.savefig(img_path)
     print(f"\nPlot saved to {img_path}")
     # plt.show() # Uncomment if running locally with a display

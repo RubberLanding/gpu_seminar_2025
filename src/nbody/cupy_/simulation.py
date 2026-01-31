@@ -10,7 +10,7 @@ EPSILON = 1e-4
 # We use RawKernel for the heavy lifting to keep memory usage low (O(N)).
 force_kernel_naive = r'''
 extern "C" __global__
-void compute_forces(const float* pos, const float* masses, float* force, 
+void compute_forces_cupy_naive(const float* pos, const float* masses, float* force, 
                     int N, float G, float EPSILON) {
     
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -50,7 +50,7 @@ void compute_forces(const float* pos, const float* masses, float* force,
 # CUDA with Shared Memory Tiling
 force_kernel_tiled = r'''
 extern "C" __global__
-void compute_forces_tiled(const float* pos, const float* masses, float* force, 
+void compute_forces_cupy_tiled(const float* pos, const float* masses, float* force, 
                           int N, float G, float EPSILON) {
     
     // Shared memory: 128 particles per tile
@@ -115,8 +115,8 @@ void compute_forces_tiled(const float* pos, const float* masses, float* force,
 '''
 
 # Compile the kernel once
-compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces')
-compute_forces_cupy_tiled = cp.RawKernel(force_kernel_tiled, 'compute_forces_tiled', options=('-use_fast_math',))
+compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive')
+compute_forces_cupy_tiled = cp.RawKernel(force_kernel_tiled, 'compute_forces_cupy_tiled', options=('-use_fast_math',))
 
 def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, force_func=compute_forces_cupy_tiled, store_history=False):
     N = pos_host.shape[0]
