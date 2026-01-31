@@ -6,7 +6,6 @@ import torch
 import cupy as cp
 import numpy as np
 
-
 from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled
 from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled, gpu_step_pos, gpu_step_vel
@@ -19,12 +18,10 @@ EPSILON = 1e-4
 WARUM_UP_ITER = 5
 
 def measure_time_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_pytorch_naive):
-    # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
 
-    # Empty cache before running big probem instances with lots of allocations
     torch.cuda.empty_cache() 
 
     pos = torch.tensor(pos_host, device=device, dtype=torch.float32)
@@ -46,11 +43,11 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_
             vel += (force_old + force_new) * inv_m * dt_half
             force_old = force_new
     
-    # Sync before timing
-    torch.cuda.synchronize() if device.type == 'cuda' else None
-    start_time = time.perf_counter()
+    # Timing
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
 
-    # The compuation that is being measured
+    start_event.record()
     with torch.no_grad():
         for step in range(steps):
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
@@ -58,10 +55,11 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_
             vel += (force_old + force_new) * inv_m * dt_half
             force_old = force_new
 
-    torch.cuda.synchronize() if device.type == 'cuda' else None
-    end_time = time.perf_counter()
-
-    total_time = end_time - start_time
+    end_event.record()
+    torch.cuda.synchronize()
+    # Elapsed_time is in ms, convert to seconds
+    total_time = start_event.elapsed_time(end_event) / 1000.0
+    
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
     print_results(total_time, steps_per_second, interactions_per_second)
@@ -96,25 +94,26 @@ def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_f
         vel_device += (force_device_old + force_device_new) * inv_m * dt_half
         force_device_old, force_device_new = force_device_new, force_device_old
     
-    # Sync before start
-    cp.cuda.Device().synchronize()
-    start_time = time.perf_counter()
+    # Timing
+    start_event = cp.cuda.Event()
+    end_event = cp.cuda.Event()
 
-    # The compuation that is being measured
+    start_event.record()
     for step in range(steps):
         pos_device += (vel_device * dt) + (force_device_old * inv_m * dt2_half)
         compute_forces_func((blocks,), (threads_per_block,), (pos_device, mass_device, force_device_new, N, G, EPSILON))
         vel_device += (force_device_old + force_device_new) * inv_m * dt_half
         force_device_old, force_device_new = force_device_new, force_device_old
 
-    # Sync before end
-    cp.cuda.Device().synchronize()
-    end_time = time.perf_counter()
+    end_event.record()
+    end_event.synchronize()
+    # Elapsed_time returns ms, convert to seconds
+    total_time = cp.cuda.get_elapsed_time(start_event, end_event) / 1000.0
     
-    total_time = end_time - start_time
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
     print_results(total_time, steps_per_second, interactions_per_second)
+
     return steps, total_time, steps_per_second, interactions_per_second
 
 def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, compute_forces_func=compute_forces_numba_tiled):
@@ -122,7 +121,7 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, compute_force
     print(f"Running on GPU (Numba). N={N}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
 
-    threads = 128 # When using `gpu_force_kernel_numba_tiled`, this must be the same value as in TPB in `simulation.py`
+    threads = 128 
     blocks = math.ceil(N / threads)
 
     d_pos = numba.cuda.to_device(pos_host)
@@ -140,25 +139,26 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, compute_force
         gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
         d_F_old, d_F_new = d_F_new, d_F_old
     
-    # Sync before start
-    numba.cuda.synchronize()
-    start_time = time.perf_counter()
-    
-    # Actual computation that is being measured
+    # Timing
+    start_event = numba.cuda.event()
+    end_event = numba.cuda.event()
+
+    start_event.record()
     for step in range(steps):
         gpu_step_pos[blocks, threads](d_pos, d_vel, d_mass, d_F_old, dt)
         compute_forces_func[blocks, threads](d_pos, d_mass, d_F_new, G, EPSILON)
         gpu_step_vel[blocks, threads](d_vel, d_mass, d_F_old, d_F_new, dt)
         d_F_old, d_F_new = d_F_new, d_F_old
-    
-    # Sync before end
-    numba.cuda.synchronize()
-    end_time = time.perf_counter()
-    
-    total_time = end_time - start_time
+
+    end_event.record()
+    end_event.synchronize()
+    # Elapsed_time returns ms, convert to seconds
+    total_time = numba.cuda.event_elapsed_time(start_event, end_event) / 1000.0
+
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N  / total_time
     print_results(total_time, steps_per_second, interactions_per_second)
+
     return steps, total_time, steps_per_second, interactions_per_second
 
 def measure_time_triton(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_triton_naive):
@@ -180,9 +180,10 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt, steps, compute_forces
         vel += (acc_old + acc_new) * dt_half
         acc_old = acc_new
 
-    # Sync before timing
-    torch.cuda.synchronize() if device.type == 'cuda' else None
-    start_time = time.perf_counter()
+    # Timing
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
 
     for step in range(steps):
         pos += (vel * dt) + (acc_old * dt2_half)
@@ -190,10 +191,11 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt, steps, compute_forces
         vel += (acc_old + acc_new) * dt_half
         acc_old = acc_new
 
-    torch.cuda.synchronize() if device.type == 'cuda' else None
-    end_time = time.perf_counter()
+    end_event.record()
+    torch.cuda.synchronize()
+    # Elapsed_time returns ms, convert to seconds
+    total_time = start_event.elapsed_time(end_event) / 1000.0
 
-    total_time = end_time - start_time
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
     print_results(total_time, steps_per_second, interactions_per_second)
