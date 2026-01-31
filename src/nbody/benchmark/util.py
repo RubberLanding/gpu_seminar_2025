@@ -6,11 +6,34 @@ import matplotlib.pyplot as plt
 
 from pathlib import Path
 
-def print_results(total_time, steps_per_second, interactions_per_second):
+def format_interactions(interactions_per_second):
+    """
+    Automatically scales the interaction count to a human-readable string 
+    with the correct SI prefix (MInt/s, GInt/s, TInt/s).
+    """
+    # Define prefixes for powers of 1000^n
+    # 10^6: Mega, 10^9: Giga, 10^12: Tera, 10^15: Peta
+    units = ["Int/s", "KInt/s", "MInt/s", "GInt/s", "TInt/s", "PInt/s"]
+    
+    magnitude = 0
+    val = float(interactions_per_second)
+    
+    # Scale down by 1000 until the value is under 1000
+    while val >= 1000.0 and magnitude < len(units) - 1:
+        val /= 1000.0
+        magnitude += 1
+        
+    return f"{val:.2f} {units[magnitude]}"
+
+def print_results(total_time, steps_per_second, interactions_per_second, n_particles):
+    """
+    Print the results human-readable.
+    """
     print("-" * 30)
-    print(f"Total Runtime:            {total_time:.4f} seconds")
+    print(f"Number of Particles:      {n_particles:.3f}")
+    print(f"Total Runtime:            {total_time:.3f} seconds")
     print(f"Performance Steps:        {steps_per_second:.2f} steps/second")
-    print(f"Performance Interactions: {interactions_per_second:.2f} interactions/second")
+    print(f"Performance Interactions: {format_interactions(interactions_per_second)}")
     print("-" * 30, "\n")
 
 def cleanup_gpu():
@@ -42,6 +65,9 @@ def create_report(method, report_base_dir="scaling_reports"):
     return report_folder
 
 def store_results(report_folder, n_values, interactions_values):
+    """
+    Wrapper to store the results as a .csv file in the given report folder.
+    """
     file_path = report_folder / "scaling_results.csv"
     with file_path.open(mode='w', newline='') as f:
         writer = csv.writer(f)

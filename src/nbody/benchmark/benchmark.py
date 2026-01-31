@@ -17,7 +17,7 @@ G = 6.67430e-11
 EPSILON = 1e-4
 WARUM_UP_ITER = 5
 
-def measure_time_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_pytorch_naive):
+def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_pytorch_naive):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
@@ -62,11 +62,11 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_
     
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
-    print_results(total_time, steps_per_second, interactions_per_second)
+    print_results(total_time, steps_per_second, interactions_per_second, N)
 
     return steps, total_time, steps_per_second, interactions_per_second
 
-def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_naive):
+def measure_time_cupy(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_cupy_naive):
     N = pos_host.shape[0]
     print(f"Running on GPU (CuPy). N={N}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
@@ -112,11 +112,11 @@ def measure_time_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_f
     
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
-    print_results(total_time, steps_per_second, interactions_per_second)
+    print_results(total_time, steps_per_second, interactions_per_second, N)
 
     return steps, total_time, steps_per_second, interactions_per_second
 
-def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, compute_forces_func=compute_forces_numba_tiled):
+def measure_time_numba(pos_host, vel_host, masses_host, dt=0.01, steps=10, compute_forces_func=compute_forces_numba_tiled):
     N = pos_host.shape[0]    
     print(f"Running on GPU (Numba). N={N}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
@@ -157,11 +157,11 @@ def measure_time_numba(pos_host, vel_host, masses_host, dt, steps, compute_force
 
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N  / total_time
-    print_results(total_time, steps_per_second, interactions_per_second)
+    print_results(total_time, steps_per_second, interactions_per_second, N)
 
     return steps, total_time, steps_per_second, interactions_per_second
 
-def measure_time_triton(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_triton_naive):
+def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_triton_naive):
     device = torch.device("cuda")
     N = pos_host.shape[0]
     pos = torch.from_numpy(pos_host).to(device)
@@ -198,7 +198,7 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt, steps, compute_forces
 
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
-    print_results(total_time, steps_per_second, interactions_per_second)
+    print_results(total_time, steps_per_second, interactions_per_second, N)
 
     return steps, total_time, steps_per_second, interactions_per_second
 
@@ -216,54 +216,77 @@ if __name__== "__main__":
                                                                  help="The force function that is being used, e.g. `gpu_force_kernel_numba_naive` for Numba.")
     args = parser.parse_args()
 
-    print(f"Measure {args.method}.")
-    print(f"Initializing {args.num_bodies} bodies...")
-    pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
-    vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
-    mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
-    
-    if args.method == "cupy" or args.method == "all":
-        if args.force_func=="compute_forces_cupy_naive": force_func = compute_forces_cupy_naive 
-        elif args.force_func=="compute_forces_cupy_tiled": force_func = compute_forces_cupy_tiled
-        else: print(f"The method to compute the forces {args.force_func} does not match the computation method {args.method}.")
+    # Mapping of framework name to its measure function and allowed force kernels
+    FRAMEWORK_CONFIG = {
+        "cupy": {
+            "measure": measure_time_cupy,
+            "kernels": {
+                "compute_forces_cupy_naive": compute_forces_cupy_naive,
+                "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
+            }
+        },
+        "numba": {
+            "measure": measure_time_numba,
+            "kernels": {
+                "compute_forces_numba_naive": compute_forces_numba_naive,
+                "compute_forces_numba_tiled": compute_forces_numba_tiled,
+            }
+        },
+        "triton": {
+            "measure": measure_time_triton,
+            "kernels": {
+                "compute_forces_triton_naive": compute_forces_triton_naive,
+            }
+        },
+        "torch": {
+            "measure": measure_time_torch,
+            "kernels": {
+                "compute_forces_pytorch_naive": compute_forces_pytorch_naive,
+                "compute_forces_pytorch_chunked": compute_forces_pytorch_chunked,
+                "compute_forces_pytorch_keops": compute_forces_pytorch_keops,
+                "compute_forces_pytorch_matmul": compute_forces_pytorch_matmul,
+                "compute_forces_pytorch_optimized": compute_forces_pytorch_optimized,
+            }
+        }
+    }
 
+    print("START BENCHMARK")
+    print("-" * 40 + "\n" + "-" * 40 + "\n")
+
+    # Determine which frameworks to run
+    methods_to_run = FRAMEWORK_CONFIG.keys() if args.method == "all" else [args.method]
+
+    for method in methods_to_run:
+        config = FRAMEWORK_CONFIG[method]
+        force_func = None
+
+        print(f"Measure {method.capitalize()}...")
+
+        # Validation Logic
         if args.force_func:
-            results = measure_time_cupy(pos, vel, mass, args.dt, args.steps, compute_forces_func=force_func)
+            if args.force_func in config["kernels"]:
+                force_func = config["kernels"][args.force_func]
+            else:
+                # If a specific force-func was requested but doesn't belong to this method
+                print(f"Skipping {method}: '{args.force_func}' is incompatible.")
+                print("-" * 20)
+                continue
         else:
-            results = measure_time_cupy(pos, vel, mass, args.dt, args.steps)
-        cleanup_gpu()
+            print(f"No specific force function provided. Using {method} default.")
 
-    if args.method == "numba" or args.method == "all":
-        if args.force_func=="compute_forces_numba_naive": force_func = compute_forces_numba_naive
-        elif args.force_func=="compute_forces_numba_tiled": force_func = compute_forces_numba_tiled
-        else: print(f"The method to compute the forces {args.force_func} does not match the computation method {args.method}.")
+        np.random.seed(42) 
+        pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
+        vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
+        mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
 
-        if args.force_func:
-            results = measure_time_numba(pos, vel, mass, args.dt, args.steps, compute_forces_func=force_func)
+        if force_func is not None: 
+            res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps, compute_forces_func=force_func)
         else:
-            results = measure_time_numba(pos, vel, mass, args.dt, args.steps)  
+            res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps)
+        
+        # Cleanup GPU memory between different framework runs
         cleanup_gpu()
+        if len(methods_to_run) > 1 : print("-" * 20 + "\n")
 
-    if args.method == "triton" or args.method == "all":
-        if args.force_func=="compute_forces_triton_naive": force_func = compute_forces_triton_naive
-        else: print(f"The method to compute the forces {args.force_func} does not match the computation method {args.method}.")
-
-        if args.force_func:
-            results = measure_time_triton(pos, vel, mass, args.dt, args.steps, compute_forces_func=force_func)
-        else:
-            results = measure_time_triton(pos, vel, mass, args.dt, args.steps)
-        cleanup_gpu()
-
-    if args.method == "torch" or args.method == "all":
-        if args.force_func=="compute_forces_pytorch_naive": force_func = compute_forces_pytorch_naive 
-        elif args.force_func=="compute_forces_pytorch_chunked": force_func = compute_forces_pytorch_chunked  
-        elif args.force_func=="compute_forces_pytorch_keops": force_func = compute_forces_pytorch_keops
-        elif args.force_func=="compute_forces_pytorch_optimized": force_func = compute_forces_pytorch_optimized
-        elif args.force_func=="compute_forces_pytorch_matmul": force_func = compute_forces_pytorch_matmul
-        else: print(f"The method to compute the forces {args.force_func} does not match the computation method {args.method}.")
-
-        if args.force_func:
-            results = measure_time_torch(pos, vel, mass, args.dt, args.steps, compute_forces_func=force_func)
-        else:
-            results = measure_time_torch(pos, vel, mass, args.dt, args.steps)
-        cleanup_gpu()
+    print("END BENCHMARK")
+    print("-" * 40 + "\n" + "-" * 40 + "\n")
