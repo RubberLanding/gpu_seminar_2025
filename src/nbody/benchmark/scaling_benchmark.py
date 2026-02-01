@@ -118,6 +118,8 @@ if __name__== "__main__":
             print(f"Skipping {method}: '{args.force_func}' is incompatible.")
             print("-" * 20)
             continue
+        force_func_str = force_func.__name__
+        print(f"Force function is {force_func_str}")
 
         results = run_scaling_benchmark(
             config["measure"], 
@@ -126,8 +128,6 @@ if __name__== "__main__":
             dt=args.dt, 
             steps=args.steps
         )
-
-        force_func_str = force_func.__name__
 
         if args.store_results or args.store_plot: report_folder, timestamp = create_report(force_func_str)
         if args.store_results: store_results(force_func_str, results, timestamp, report_folder)

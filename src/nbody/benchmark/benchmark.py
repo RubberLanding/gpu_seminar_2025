@@ -212,9 +212,8 @@ if __name__== "__main__":
                                                                  "compute_forces_cupy_naive", "compute_forces_cupy_tiled",
                                                                  "compute_forces_numba_naive", "compute_forces_numba_tiled",
                                                                  "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
-                                                                 "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"],
+                                                                 "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], default="default",
                                                                  help="The force function that is being used, e.g. `gpu_force_kernel_numba_naive` for Numba.")
-
     args = parser.parse_args()
 
     # Mapping of framework name to its measure function and allowed force kernels
@@ -224,6 +223,7 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
                 "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
+                "default":                   inspect.signature(measure_time_cupy).parameters["compute_forces_func"].default
             }
         },
         "numba": {
@@ -231,22 +231,25 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_numba_naive": compute_forces_numba_naive,
                 "compute_forces_numba_tiled": compute_forces_numba_tiled,
+                "default":                    inspect.signature(measure_time_numba).parameters["compute_forces_func"].default
             }
         },
         "triton": {
             "measure": measure_time_triton,
             "kernels": {
                 "compute_forces_triton_naive": compute_forces_triton_naive,
+                "default":                     inspect.signature(measure_time_triton).parameters["compute_forces_func"].default
             }
         },
         "torch": {
             "measure": measure_time_torch,
             "kernels": {
-                "compute_forces_pytorch_naive": compute_forces_pytorch_naive,
-                "compute_forces_pytorch_chunked": compute_forces_pytorch_chunked,
-                "compute_forces_pytorch_keops": compute_forces_pytorch_keops,
-                "compute_forces_pytorch_matmul": compute_forces_pytorch_matmul,
+                "compute_forces_pytorch_naive":     compute_forces_pytorch_naive,
+                "compute_forces_pytorch_chunked":   compute_forces_pytorch_chunked,
+                "compute_forces_pytorch_keops":     compute_forces_pytorch_keops,
+                "compute_forces_pytorch_matmul":    compute_forces_pytorch_matmul,
                 "compute_forces_pytorch_optimized": compute_forces_pytorch_optimized,
+                "default":                          inspect.signature(measure_time_torch).parameters["compute_forces_func"].default
             }
         }
     }
@@ -263,27 +266,22 @@ if __name__== "__main__":
 
         print(f"Measure {method.capitalize()}...")
 
-        # Validation Logic
-        if args.force_func:
-            if args.force_func in config["kernels"]:
-                force_func = config["kernels"][args.force_func]
-            else:
-                # If a specific force-func was requested but doesn't belong to this method
-                print(f"Skipping {method}: '{args.force_func}' is incompatible.")
-                print("-" * 20)
-                continue
+        if args.force_func in config["kernels"]:
+            force_func = config["kernels"][args.force_func]
         else:
-            print(f"No specific force function provided. Using {method} default.")
+            # If a specific force-func was requested but doesn't belong to this method
+            print(f"Skipping {method}: '{args.force_func}' is incompatible.")
+            print("-" * 20)
+            continue
+        force_func_str = force_func.__name__
+        print(f"Force function is {force_func_str}")
 
         np.random.seed(42) 
         pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
         vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5
         mass = np.random.rand(args.num_bodies).astype(np.float32) * 1e4
 
-        if force_func is not None: 
-            res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps, compute_forces_func=force_func)
-        else:
-            res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps)
+        res = config["measure"](pos, vel, mass, dt=args.dt, steps=args.steps, compute_forces_func=force_func)
 
         # Cleanup GPU memory between different framework runs
         cleanup_gpu()
