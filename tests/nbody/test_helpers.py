@@ -3,10 +3,14 @@ import math
 import pytest
 
 from nbody.cupy_.simulation import run_simulation_cupy
-from nbody.visualization import generate_solar_system
+from nbody.util import generate_solar_system
 
-def calculate_energy(pos, vel, masses, G, epsilon):
-    """Calculates Total Energy (Kinetic + Potential)"""
+# Constants
+G = 6.6743e-11
+EPS = 1e-4
+
+def calculate_energy(pos, vel, masses):
+    """Calculates Total Energy (Kinetic + Potential) using squared softening"""
     n = len(masses)
     kinetic = 0.0
     potential = 0.0
@@ -22,18 +26,21 @@ def calculate_energy(pos, vel, masses, G, epsilon):
             dx = pos[i, 0] - pos[j, 0]
             dy = pos[i, 1] - pos[j, 1]
             dz = pos[i, 2] - pos[j, 2]
-            dist = math.sqrt(dx*dx + dy*dy + dz*dz + epsilon**2)
+            
+            dist_sq = dx*dx + dy*dy + dz*dz + (EPS**2)
+            dist = math.sqrt(dist_sq)
+            
             potential -= (G * masses[i] * masses[j]) / dist
             
     return kinetic + potential
 
-def analyze_energy(pos_history, vel_history, masses, G, epsilon):
+def analyze_energy(pos_history, vel_history, masses):
     steps = pos_history.shape[0]
     energy_history = np.zeros(steps, dtype=np.float32)
     
     print("Computing energy profile...")
     for i in range(steps):
-        energy_history[i] = calculate_energy(pos_history[i], vel_history[i], masses, G, epsilon)
+        energy_history[i] = calculate_energy(pos_history[i], vel_history[i], masses)
         
     return energy_history
 
@@ -98,16 +105,15 @@ def check_energy_conservation(run_simulation):
     Test that the energy is conserved.
     """
     N = 10
+    n_steps = 400
     pos, vel, mass = generate_solar_system(N)
     pos = pos.astype(np.float32)
     vel = vel.astype(np.float32)
     mass = mass.astype(np.float32)
     
-    n_steps = 400
-    
     pos_hist, vel_hist = run_simulation(pos, vel, mass, dt=0.001, steps=n_steps, store_history=True)
     
-    energies = analyze_energy(pos_hist, vel_hist, mass, G=6.6743e-11, epsilon=1e-1)
+    energies = analyze_energy(pos_hist, vel_hist, mass)
 
     # Calculate drift
     # Avoid division by zero if energy is 0
