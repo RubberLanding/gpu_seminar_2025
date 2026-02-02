@@ -200,70 +200,74 @@ def compute_forces_pytorch_naive(pos, mass, G, EPSILON):
     
     return force
 
-def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force_func=compute_forces_pytorch_naive, store_history=False):
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Running on {device} (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
+def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_pytorch_naive, store_history=False):
+    # --- 1. SETUP & TRANSFER ---
+    assert torch.cuda.is_available(), "CUDA is not available!"
+    device = torch.device("cuda")   
+    print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
+    print(f"Using Force Function: {compute_forces_func.__name__}")
 
-    # Move data to GPU
-    pos = torch.tensor(pos_host, device=device, dtype=torch.float32)
-    vel = torch.tensor(vel_host, device=device, dtype=torch.float32)
+    pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
+    vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
     mass = torch.tensor(mass_host, device=device, dtype=torch.float32)
-    N = pos.shape[0]
+    N    = pos.shape[0]
 
-    # Allocate history buffers on CPU to store intermediate results
+    # --- 2. CONSTANTS PREP ---
+    dt_tensor = torch.tensor(dt, device=device, dtype=torch.float32)
+    dt2_half  = 0.5 * dt_tensor * dt_tensor
+    dt_half   = 0.5 * dt_tensor
+    inv_m     = 1.0 / mass.unsqueeze(1)
+    
+    # History buffer
     if store_history:
         pos_history = torch.zeros((steps + 1, N, 3), dtype=torch.float32)
         vel_history = torch.zeros((steps + 1, N, 3), dtype=torch.float32)
-        # Store initial state
-        pos_history[0] = pos.cpu()
-        vel_history[0] = vel.cpu()
+        pos_history[0], vel_history[0] = pos.cpu(), vel.cpu()
     else:
-        pos_history = None
-        vel_history = None
+        pos_history, vel_history = None, None
 
-    # Pre-calculate constants
-    dt_tensor = torch.tensor(dt, device=device, dtype=torch.float32)
-    dt2_half = 0.5 * dt_tensor * dt_tensor
-    dt_half = 0.5 * dt_tensor
-    inv_m = 1.0 / mass.unsqueeze(1)
-
+    # --- 3. WARM-UP ---
     with torch.no_grad():
-        # Initial Force
         nvtx.range_push("warmup_compile")
-
-        force_old = compute_force_func(pos, mass, G, EPSILON).clone()
         
-        torch.cuda.synchronize() # Ensure compilation is done before closing range
+        # Single compile pass
+        force_old = compute_forces_func(pos, mass, G, EPSILON).clone()
+        
+        torch.cuda.synchronize()
         nvtx.range_pop()
 
+    # --- 4. START SIMULATION ---
+
+    with torch.no_grad():     
+        # ==================== CORE LOOP ====================
         for step in range(steps):
             nvtx.range_push("nbody_step")
 
-            # Update position
+            # [Step A] Update Position
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
 
-            # Update forces
-            force_new = compute_force_func(pos, mass, G, EPSILON).clone()
+            # [Step B] Compute Forces
+            force_new = compute_forces_func(pos, mass, G, EPSILON).clone()
 
-            # Update velocity
+            # [Step C] Update Velocity
             vel += (force_old + force_new) * inv_m * dt_half
-
-            # Store intermediate values
+            
+            # [Step D] Swap References
             if store_history:
                 pos_history[step + 1] = pos.cpu()
                 vel_history[step + 1] = vel.cpu()
-
-            # Swap references
+            
             force_old = force_new
 
             nvtx.range_pop()
+        # ===================================================
 
+    # --- 5. FINALIZE ---
     if store_history:
         return pos_history.numpy(), vel_history.numpy()
     else:
         return pos.cpu().numpy(), vel.cpu().numpy()
-
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pytorch N-Body Simulation")
     parser.add_argument("-n", "--num-bodies", type=int, default=1000, help="Number of particles")

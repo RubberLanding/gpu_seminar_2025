@@ -18,48 +18,61 @@ EPSILON = 1e-4
 WARUM_UP_ITER = 5
 
 def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_pytorch_naive):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # --- 1. SETUP & TRANSFER ---
+    assert torch.cuda.is_available(), "CUDA is not available!"
+    device = torch.device("cuda")   
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
-
-    torch.cuda.empty_cache() 
-
-    pos = torch.tensor(pos_host, device=device, dtype=torch.float32)
-    vel = torch.tensor(vel_host, device=device, dtype=torch.float32)
+    
+    pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
+    vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
     mass = torch.tensor(mass_host, device=device, dtype=torch.float32)
-    N = pos.shape[0]
+    N    = pos.shape[0]
 
+    # --- 2. CONSTANTS PREP ---
     dt_tensor = torch.tensor(dt, device=device, dtype=torch.float32)
-    dt2_half = 0.5 * dt_tensor * dt_tensor
-    dt_half = 0.5 * dt_tensor
-    inv_m = 1.0 / mass.unsqueeze(1)
+    dt2_half  = 0.5 * dt_tensor * dt_tensor
+    dt_half   = 0.5 * dt_tensor
+    inv_m     = 1.0 / mass.unsqueeze(1)
 
-    # Warm-Up 
+    # --- 3. WARM-UP ---
     with torch.no_grad():
         force_old = compute_forces_func(pos, mass, G, EPSILON).clone()
+        
+        # Warm-up loop to stabilize GPU clock
         for step in range(WARUM_UP_ITER):
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
             force_new = compute_forces_func(pos, mass, G, EPSILON).clone()
             vel += (force_old + force_new) * inv_m * dt_half
             force_old = force_new
-    
-    # Timing
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
 
+    # --- 4. START SIMULATION ---
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event   = torch.cuda.Event(enable_timing=True)
+    
     start_event.record()
     with torch.no_grad():
+        # ==================== CORE LOOP ====================
         for step in range(steps):
+            
+            # [Step A] Update Position
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
+
+            # [Step B] Compute Forces
             force_new = compute_forces_func(pos, mass, G, EPSILON).clone()
+
+            # [Step C] Update Velocity
             vel += (force_old + force_new) * inv_m * dt_half
+
+            # [Step D] Swap References
             force_old = force_new
+        # ===================================================
 
     end_event.record()
     torch.cuda.synchronize()
-    # Elapsed_time is in ms, convert to seconds
-    total_time = start_event.elapsed_time(end_event) / 1000.0
     
+    # --- 5. FINALIZE ---
+    total_time = start_event.elapsed_time(end_event) / 1000.0
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time
     print_results(total_time, steps_per_second, interactions_per_second, N)
