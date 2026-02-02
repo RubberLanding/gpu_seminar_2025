@@ -226,18 +226,16 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
     else:
         pos_history, vel_history = None, None
 
-    # --- 3. WARM-UP ---
     with torch.no_grad():
         nvtx.range_push("warmup_compile")
         
-        # Single compile pass
+        # Initial force calculation
         force_old = compute_forces_func(pos, mass, G, EPSILON).clone()
         
         torch.cuda.synchronize()
         nvtx.range_pop()
 
-    # --- 4. START SIMULATION ---
-
+    # --- 3. START SIMULATION ---
     with torch.no_grad():     
         # ==================== CORE LOOP ====================
         for step in range(steps):
@@ -262,7 +260,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
             nvtx.range_pop()
         # ===================================================
 
-    # --- 5. FINALIZE ---
+    # --- 4. FINALIZE ---
     if store_history:
         return pos_history.numpy(), vel_history.numpy()
     else:
