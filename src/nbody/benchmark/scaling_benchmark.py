@@ -5,9 +5,9 @@ import numpy as np
 from nbody.benchmark.benchmark import measure_time_cupy, measure_time_numba, measure_time_torch, measure_time_triton
 from nbody.benchmark.util import cleanup_gpu, store_results, plot_results, create_report
 from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized
-from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled
-from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled
-from nbody.triton_.simulation import compute_forces_triton_naive
+from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled, compute_forces_cupy_keops
+from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled, gpu_step_pos, gpu_step_vel
+from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
 
 def run_scaling_benchmark(measure_time_func, n_particles, compute_forces=None, **kwargs):
     results = {
@@ -51,13 +51,16 @@ if __name__== "__main__":
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-m", "--method", type=str, choices=["numba", "torch", "cupy", "triton", "all"], default="numba", help="Method to use (numba, torch, cupy, triton or all)")
-    parser.add_argument("-f", "--force-func", type=str, choices=["compute_forces_triton_naive", 
-                                                                 "compute_forces_cupy_naive", "compute_forces_cupy_tiled",
-                                                                 "compute_forces_numba_naive", "compute_forces_numba_tiled",
-                                                                 "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
-                                                                 "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], default="default",
-                                                                 help="The force function that is being used, e.g. `gpu_force_kernel_numba_naive` for Numba.")
-    parser.add_argument("--store-results", action="store_true", help="Store the results.") 
+    parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
+            "compute_accel_triton_naive", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
+            "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops",
+            "compute_forces_numba_naive", "compute_forces_numba_tiled", 
+            "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
+            "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], 
+            help="One or more force functions to benchmark.")
+    parser.add_argument("--tpb-numba", type=int, default=128, help="Threads per block for Numba. Should be a multiple of 32.")
+    parser.add_argument("--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
+    parser.add_argument("--store-results", action="store_true", help="Store the results.")
     parser.add_argument("--store-plot", action="store_true", help="Store the performance plot.") 
     args = parser.parse_args()
 
@@ -68,25 +71,26 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
                 "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
-                "default":                   inspect.signature(measure_time_cupy).parameters["compute_forces_func"].default
+                "compute_forces_cupy_keops": compute_forces_cupy_keops,
             }
         },
         "numba": {
             "measure": measure_time_numba,
             "kernels": {
                 "compute_forces_numba_naive": compute_forces_numba_naive,
-                "compute_forces_numba_tiled": compute_forces_numba_tiled,
-                "default":                    inspect.signature(measure_time_numba).parameters["compute_forces_func"].default
+                "compute_forces_numba_tiled": compute_forces_numba_tiled(args.tpb_numba),
             }
         },
         "triton": {
             "measure": measure_time_triton,
             "kernels": {
-                "compute_forces_triton_naive": compute_forces_triton_naive,
-                "default":                     inspect.signature(measure_time_triton).parameters["compute_forces_func"].default
+                "compute_accel_triton_naive": compute_accel_triton_naive,
+                "compute_accel_triton_tensor": compute_accel_triton_tensor,
+                "compute_accel_triton_tiled": compute_accel_triton_tiled,
+                "compute_accel_triton_mixed": compute_accel_triton_mixed,
             }
         },
-        "torch": {
+        "pytorch": {
             "measure": measure_time_torch,
             "kernels": {
                 "compute_forces_pytorch_naive":     compute_forces_pytorch_naive,
@@ -94,8 +98,7 @@ if __name__== "__main__":
                 "compute_forces_pytorch_keops":     compute_forces_pytorch_keops,
                 "compute_forces_pytorch_matmul":    compute_forces_pytorch_matmul,
                 "compute_forces_pytorch_optimized": compute_forces_pytorch_optimized,
-                "default":                          inspect.signature(measure_time_torch).parameters["compute_forces_func"].default
-            }
+                }
         }
     }
 
@@ -103,30 +106,33 @@ if __name__== "__main__":
     print("-" * 40 + "\n" + "-" * 40 + "\n")
 
     n_particles = [(4 * i)**3 for i in range(args.n_start, args.n_end + 1)]
-    methods_to_run = FRAMEWORK_CONFIG.keys() if args.method == "all" else [args.method]
 
-    for method in methods_to_run:
-        config = FRAMEWORK_CONFIG[method]
+    for force_func_str in args.force_func: 
+        if "numba" in force_func_str:
+            framework = "numba"
+        elif "cupy" in force_func_str:
+            framework = "cupy"
+        elif "pytorch" in force_func_str:
+            framework = "pytorch"
+        elif "triton" in force_func_str:
+            framework = "triton"
 
-        print(f"Measure {method.capitalize()}...")
-        print(f"Force function is {args.force_func}")
+        config = FRAMEWORK_CONFIG[framework]
+        print(f"Measure {force_func_str.capitalize()}...")
 
-        if args.force_func in config["kernels"]:
-            force_func = config["kernels"][args.force_func]
-        else:
-            # If a specific force-func was requested but doesn't belong to this method
-            print(f"Skipping {method}: '{args.force_func}' is incompatible.")
-            print("-" * 20)
-            continue
-        force_func_str = force_func.__name__
-        print(f"Force function is {force_func_str}")
+        force_func = config["kernels"][force_func_str]
+
+        # Framework-specific arguments
+        measure_kwargs = {}
+        if framework == "triton":
+            measure_kwargs["block_size"] = args.bs_triton
 
         results = run_scaling_benchmark(
             config["measure"], 
             n_particles, 
             compute_forces=force_func, 
             dt=args.dt, 
-            steps=args.steps
+            steps=args.steps, **measure_kwargs
         )
 
         if args.store_results or args.store_plot: report_folder, timestamp = create_report(force_func_str)
@@ -134,7 +140,7 @@ if __name__== "__main__":
         if args.store_plot: plot_results(force_func_str, results["num_bodies"], results["interactions_per_second"], report_folder)
 
         cleanup_gpu()
-        print("-" * 20 + "\n")
+        if len(args.force_func) > 1 : print("-" * 20 + "\n")
 
     print("END SCALING BENCHMARK")
     print("-" * 40 + "\n" + "-" * 40 + "\n")
