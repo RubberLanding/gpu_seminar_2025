@@ -201,7 +201,7 @@ def compute_forces_pytorch_naive(pos, mass, G, EPSILON):
     return force
 
 def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_pytorch_naive, store_history=False):
-    # --- 1. SETUP & TRANSFER ---
+    # --- SETUP & TRANSFER ---
     assert torch.cuda.is_available(), "CUDA is not available!"
     device = torch.device("cuda")   
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
@@ -212,7 +212,7 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
     mass = torch.tensor(mass_host, device=device, dtype=torch.float32)
     N    = pos.shape[0]
 
-    # --- 2. CONSTANTS PREP ---
+    # --- CONSTANTS PREP ---
     dt_tensor = torch.tensor(dt, device=device, dtype=torch.float32)
     dt2_half  = 0.5 * dt_tensor * dt_tensor
     dt_half   = 0.5 * dt_tensor
@@ -235,9 +235,8 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
         torch.cuda.synchronize()
         nvtx.range_pop()
 
-    # --- 3. START SIMULATION ---
+    # --- START SIMULATION ---
     with torch.no_grad():     
-        # ==================== CORE LOOP ====================
         for step in range(steps):
             nvtx.range_push("nbody_step")
 
@@ -250,17 +249,17 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
             # [Step C] Update Velocity
             vel += (force_old + force_new) * inv_m * dt_half
             
-            # [Step D] Swap References
             if store_history:
                 pos_history[step + 1] = pos.cpu()
                 vel_history[step + 1] = vel.cpu()
             
+            # [Step D] Swap References
             force_old = force_new
 
             nvtx.range_pop()
         # ===================================================
 
-    # --- 4. FINALIZE ---
+    # --- FINALIZE ---
     if store_history:
         return pos_history.numpy(), vel_history.numpy()
     else:
