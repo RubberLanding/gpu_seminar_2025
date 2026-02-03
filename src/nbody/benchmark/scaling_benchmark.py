@@ -46,8 +46,8 @@ def run_scaling_benchmark(measure_time_func, n_particles, compute_forces=None, *
 
 if __name__== "__main__":
     parser = argparse.ArgumentParser(description="N-Body Simulation Benchmark")
-    parser.add_argument("--n-start", type=int, default=8, help="The number of particles are calculated like: `n_i = (4 * i)^3 for i in (n_start, ..., n_end)`.")
-    parser.add_argument("--n-end", type=int, default=8, help="The number of particles are calculated like: `n_i = (4 * i)^3 for i in (n_start, ..., n_end)`.")
+    parser.add_argument("-ns", "--n-start", type=int, default=8, help="The number of particles are calculated like: `n_i = (4 * i)^3 for i in (n_start, ..., n_end)`.")
+    parser.add_argument("-ne", "--n-end", type=int, default=19, help="The number of particles are calculated like: `n_i = (4 * i)^3 for i in (n_start, ..., n_end)`.")
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-m", "--method", type=str, choices=["numba", "torch", "cupy", "triton", "all"], default="numba", help="Method to use (numba, torch, cupy, triton or all)")
@@ -58,11 +58,13 @@ if __name__== "__main__":
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
             "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], 
             help="One or more force functions to benchmark.")
-    parser.add_argument("--tpb-numba", type=int, default=128, help="Threads per block for Numba. Should be a multiple of 32.")
-    parser.add_argument("--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
-    parser.add_argument("--store-results", action="store_true", help="Store the results.")
-    parser.add_argument("--store-plot", action="store_true", help="Store the performance plot.") 
+    parser.add_argument("-tn", "--tpb-numba", type=int, default=128, help="Threads per block for Numba with Tiling. Should be a multiple of 32.")
+    parser.add_argument("-bt", "--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
+    parser.add_argument("-sr", "--store-results", action="store_true", help="Store the results.")
+    parser.add_argument("-sp", "--store-plot", action="store_true", help="Store the performance plot.") 
     args = parser.parse_args()
+
+    assert args.force_func != None, "Provide a force function, e.g. `--force-func compute_forces_cupy_naive`!"
 
     # Mapping of framework name to its measure function and allowed force kernels
     FRAMEWORK_CONFIG = {

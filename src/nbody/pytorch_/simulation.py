@@ -207,6 +207,8 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
 
+    # torch.cuda.empty_cache()
+
     pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
     vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
     mass = torch.tensor(mass_host, device=device, dtype=torch.float32)

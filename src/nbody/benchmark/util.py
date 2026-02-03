@@ -109,6 +109,6 @@ def plot_results(force_func, n_values, interactions_values, report_folder):
     # Save and Show
     img_path = report_folder / f'nbody_scaling.png'
     plt.savefig(img_path)
-    print(f"\nPlot saved to {img_path}")
+    print(f"\n[✔] Plot saved to: {img_path}")
     # plt.show() # Uncomment if running locally with a display
 

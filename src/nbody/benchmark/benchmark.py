@@ -6,7 +6,7 @@ import triton
 import cupy as cp
 import numpy as np
 
-from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized
+from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized, set_triton_config
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled, compute_forces_cupy_keops
 from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled, gpu_step_pos, gpu_step_vel
 from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
@@ -17,12 +17,15 @@ G = 6.67430e-11
 EPSILON = 1e-4
 WARUM_UP_ITER = 5
 
-def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_pytorch_naive):
+def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_pytorch_naive, triton_block_size=4096):
     # --- SETUP & TRANSFER ---
     assert torch.cuda.is_available(), "CUDA is not available!"
     device = torch.device("cuda")   
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
+
+    # cleanup_gpu()
+    # set_triton_config(triton_block_size)
     
     pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
     vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
@@ -292,8 +295,9 @@ if __name__== "__main__":
     parser.add_argument("--store-plot", action="store_true", help="Store the performance plot.") 
     parser.add_argument("--tpb-numba", type=int, default=128, help="Threads per block for Numba. Should be a multiple of 32.")
     parser.add_argument("--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
-
     args = parser.parse_args()
+
+    assert args.force_func != None, "Provide a force function, e.g. `--force-func compute_forces_cupy_naive`!"
 
     # Mapping of framework name to its measure function and allowed force kernels
     FRAMEWORK_CONFIG = {
