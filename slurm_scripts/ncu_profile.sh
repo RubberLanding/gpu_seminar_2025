@@ -46,20 +46,23 @@ NCU_EXTRA_FLAGS=""
 case $MODE in
     "numba")
         # Use single quotes for the variable and escaped/nested quotes for the path
-        NCU_EXTRA_FLAGS="-k regex:.*gpu_force_kernel.* --import-source yes --resolve-source-file \"$SCRIPT_PATH\""
+        NCU_EXTRA_FLAGS="-k regex:compute_forces.* --import-source yes --resolve-source-file \"$SCRIPT_PATH\""
         echo "Profiling Numba with LineInfo support..."
         ;;    
-    "cupy")
-    # Environment variable to prevent CuPy from deleting temp .cu files.
+        "cupy")
+        # Environment variable to prevent CuPy from deleting temp .cu files.
         export CUPY_CACHE_SAVE_CUDA_SOURCE=1
-        NCU_EXTRA_FLAGS="--import-source yes"
+        NCU_EXTRA_FLAGS="-k regex:compute_forces.* --import-source yes" 
         echo "Profiling CuPy with C++ source caching..."
-        ;;
-    "pytorch")
+        ;;    
+        "pytorch")
         # --nvtx: Tells NCU to respect the markers in your code.
         # --nvtx-include: Limits profiling to the actual simulation step.
         NCU_EXTRA_FLAGS="--nvtx --nvtx-include nbody_step/"
         echo "Profiling PyTorch with NVTX range filtering..."
+        ;;
+        "triton")
+        NCU_EXTRA_FLAGS="-k regex:compute_accel.* --import-source yes"
         ;;
 esac
 
@@ -78,6 +81,7 @@ ncu --section SpeedOfLight \
     $NCU_EXTRA_FLAGS \
     -o "${REPORT_DIR}/nbody_profile_nsys_${MODE}_${SLURM_JOB_ID}" \
     --force-overwrite \
-    python "$SCRIPT_PATH" -n "$NUM_PARTICLES" --steps "$NUM_STEPS"
+    python src/nbody/benchmark/benchmark.py --force_func compute_forces_pytorch_keops -n 100000
 
 echo "Profiling finished. Report saved to: $REPORT_DIR"
+

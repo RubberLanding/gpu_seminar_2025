@@ -245,6 +245,6 @@ if __name__ == "__main__":
     
     print(f"Simulation with Cupy. Initializing {args.num_bodies} bodies...")
 
-    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False)
+    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=compute_forces_cupy_keops)
     
     print("Simulation step complete.")

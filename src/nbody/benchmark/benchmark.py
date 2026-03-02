@@ -291,10 +291,10 @@ if __name__== "__main__":
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
             "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], 
             help="One or more force functions to benchmark.")
-    parser.add_argument("--store-results", action="store_true", help="Store the results.")
-    parser.add_argument("--store-plot", action="store_true", help="Store the performance plot.") 
-    parser.add_argument("--tpb-numba", type=int, default=128, help="Threads per block for Numba. Should be a multiple of 32.")
-    parser.add_argument("--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
+    parser.add_argument("-sr", "--store-results", action="store_true", help="Store the results.")
+    parser.add_argument("-sp", "--store-plot", action="store_true", help="Store the performance plot.") 
+    parser.add_argument("-tn", "--tpb-numba", type=int, default=128, help="Threads per block for Numba. Should be a multiple of 32.")
+    parser.add_argument("-bt", "--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
     args = parser.parse_args()
 
     assert args.force_func != None, "Provide a force function, e.g. `--force-func compute_forces_cupy_naive`!"

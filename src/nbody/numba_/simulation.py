@@ -36,7 +36,7 @@ def compute_forces_numba_naive(r_pos, masses, r_force, G, EPSILON):
         r_force[i, 1] = -G * m_i * ftmp_y
         r_force[i, 2] = -G * m_i * ftmp_z
 
-@cuda.jit(fastmath=True)
+@cuda.jit(lineinfo=True, fastmath=True)
 def gpu_step_pos(pos, vel, masses, F_old, dt):
     """CUDA Kernel for Position Update (Verlet Step 1)."""
     i = cuda.grid(1)
@@ -48,7 +48,7 @@ def gpu_step_pos(pos, vel, masses, F_old, dt):
         pos[i, 1] += vel[i, 1] * dt + (F_old[i, 1] * inv_m) * dt2_half
         pos[i, 2] += vel[i, 2] * dt + (F_old[i, 2] * inv_m) * dt2_half
 
-@cuda.jit(fastmath=True)
+@cuda.jit(lineinfo=True, fastmath=True)
 def gpu_step_vel(vel, masses, F_old, F_new, dt):
     """CUDA Kernel for Velocity Update (Verlet Step 2)."""
     i = cuda.grid(1)
@@ -63,7 +63,7 @@ def gpu_step_vel(vel, masses, F_old, F_new, dt):
 def compute_forces_numba_tiled(threads_per_block):
     TPB = threads_per_block
 
-    @cuda.jit(fastmath=True)
+    @cuda.jit(lineinfo=True, fastmath=True)
     def compute_forces_numba_tiled_(r_pos, masses, r_force, G, EPSILON):
         # 1. Flatten Shared Memory to eliminate bank conflicts
         s_x = cuda.shared.array(shape=TPB, dtype=float32)
@@ -122,10 +122,10 @@ def compute_forces_numba_tiled(threads_per_block):
 
 def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_numba_naive, threads=128, store_history=False):
     # --- SETUP & TRANSFER ---
+    N = pos_host.shape[0]
     print(f"Running on GPU (Numba). N={N}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
     
-    N = pos_host.shape[0]
     pos  = cuda.to_device(pos_host)
     vel  = cuda.to_device(vel_host)
     mass = cuda.to_device(mass_host)
@@ -149,6 +149,9 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
 
     # Initial force calculation
     compute_forces_func[blocks, threads](pos, mass, force_old, G, EPSILON)
+
+    cuda.synchronize()
+    cuda.profile_start()  # <--- START RECORDING HERE
     
     # --- START SIMULATION ---
     for step in range(steps):
@@ -170,6 +173,8 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         force_old, force_new = force_new, force_old
     # ===================================================
 
+    cuda.profile_stop()
+
     # --- FINALIZE ---
     if store_history:
         return pos_history, vel_history
@@ -189,6 +194,6 @@ if __name__ == "__main__":
     
     print(f"Simulation with Numba. Initializing {args.num_bodies} bodies...")
 
-    run_simulation_numba(pos, vel, mass, args.dt, args.steps)
+    run_simulation_numba(pos, vel, mass, args.dt, args.steps, compute_forces_func=compute_forces_numba_tiled)
     
     print("Simulation step complete.")
