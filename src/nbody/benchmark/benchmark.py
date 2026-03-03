@@ -9,7 +9,7 @@ import numpy as np
 from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized, set_triton_config
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled, compute_forces_cupy_keops
 from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled, gpu_step_pos, gpu_step_vel
-from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
+from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized, compute_forces_optim # compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
 from nbody.benchmark.util import print_results, cleanup_gpu
 
 # Constants
@@ -203,13 +203,19 @@ def measure_time_numba(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
 
     return steps, total_time, steps_per_second, interactions_per_second
 
-def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_accel_triton_tiled, block_size=32):
+def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_accel_triton_naive, block_size=32):
     # --- SETUP & TRANSFER ---
     assert torch.cuda.is_available(), "CUDA is not available!"
     device = torch.device("cuda")   
     N = pos_host.shape[0]
+
+    if hasattr(compute_forces_func, 'fn'):
+        func_name = compute_forces_func.fn.__name__
+    else:
+        func_name = compute_forces_func.__name__
+
     print(f"Running on GPU (Triton). N={N}, Steps={steps}")
-    print(f"Using Force Function: {compute_forces_func.__name__}")
+    print(f"Using Force Function: {func_name}")
 
     pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
     vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
@@ -217,15 +223,15 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, comput
     force_old = torch.empty_like(pos)
     force_new = torch.empty_like(pos)
 
-    use_mixed = "mixed" in compute_forces_func.__name__
-    mass_16 = mass.to(torch.float16) if use_mixed else mass
+    use_optim = "optim" in func_name
 
     # --- CONSTANTS PREP ---
     dt_vec   = torch.tensor(dt, device=device, dtype=torch.float32)
     dt2_half = 0.5 * dt_vec * dt_vec
     dt_half  = 0.5 * dt_vec
     
-    grid = (triton.cdiv(N, block_size),)
+    # Define a dynamic grid function for the autotuner
+    grid_fn = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE']),)
 
     # --- WARM-UP ---
     # WARNING: Although named 'force_old/new' and 'compute_forces_func' to match other backends,
@@ -233,14 +239,19 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, comput
     # Therefore, we DO NOT multiply by inv_m in the update steps below.
 
     # Initial force calculation 
-    if use_mixed:
-        compute_forces_func[grid](pos.to(torch.float16), mass_16, force_old, G, EPSILON, N, BLOCK_SIZE=block_size)
+    if use_optim:
+        compute_forces_optim(pos, mass, force_old, G, EPSILON, N, grid_fn)
     else:
-        compute_forces_func[grid](pos, mass, force_old, G, EPSILON, N, BLOCK_SIZE=block_size)
+        compute_forces_func[grid_fn](pos, mass, force_old, G, EPSILON, N)
 
     for step in range(WARUM_UP_ITER):
         pos += (vel * dt_vec) + (force_old * dt2_half) 
-        compute_forces_func[grid](pos, mass, force_new, G, EPSILON, N, BLOCK_SIZE=block_size)
+
+        if use_optim:
+            compute_forces_optim(pos, mass, force_new, G, EPSILON, N, grid_fn)
+        else:
+            compute_forces_func[grid_fn](pos, mass, force_new, G, EPSILON, N)
+
         vel += (force_old + force_new) * dt_half
         force_old, force_new = force_new, force_old
 
@@ -256,10 +267,10 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, comput
         pos += (vel * dt_vec) + (force_old * dt2_half)
 
         # [Step B] Compute Acceleration: a(t+dt)
-        if use_mixed:
-            compute_forces_func[grid](pos.to(torch.float16), mass_16, force_new, G, EPSILON, N, BLOCK_SIZE=block_size)
+        if use_optim:
+            compute_forces_optim(pos, mass, force_new, G, EPSILON, N, grid_fn)
         else:
-            compute_forces_func[grid](pos, mass, force_new, G, EPSILON, N, BLOCK_SIZE=block_size)
+            compute_forces_func[grid_fn](pos, mass, force_new, G, EPSILON, N)
 
         # [Step C] Update Velocity: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
         vel += (force_old + force_new) * dt_half
@@ -285,7 +296,7 @@ if __name__== "__main__":
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
-            "compute_accel_triton_naive", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
+            "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
             "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops",
             "compute_forces_numba_naive", "compute_forces_numba_tiled", 
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
@@ -320,9 +331,10 @@ if __name__== "__main__":
             "measure": measure_time_triton,
             "kernels": {
                 "compute_accel_triton_naive": compute_accel_triton_naive,
-                "compute_accel_triton_tensor": compute_accel_triton_tensor,
-                "compute_accel_triton_tiled": compute_accel_triton_tiled,
-                "compute_accel_triton_mixed": compute_accel_triton_mixed,
+                "compute_accel_triton_optimized": compute_accel_triton_optimized,
+                # "compute_accel_triton_tensor": compute_accel_triton_tensor,
+                # "compute_accel_triton_tiled": compute_accel_triton_tiled,
+                # "compute_accel_triton_mixed": compute_accel_triton_mixed,
             }
         },
         "pytorch": {

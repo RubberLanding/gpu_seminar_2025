@@ -7,7 +7,7 @@ from nbody.benchmark.util import cleanup_gpu, store_results, plot_results, creat
 from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled, compute_forces_cupy_keops
 from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled, gpu_step_pos, gpu_step_vel
-from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
+from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized #, compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
 
 def run_scaling_benchmark(measure_time_func, n_particles, compute_forces=None, **kwargs):
     results = {
@@ -50,9 +50,8 @@ if __name__== "__main__":
     parser.add_argument("-ne", "--n-end", type=int, default=19, help="The number of particles are calculated like: `n_i = (4 * i)^3 for i in (n_start, ..., n_end)`.")
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
-    parser.add_argument("-m", "--method", type=str, choices=["numba", "torch", "cupy", "triton", "all"], default="numba", help="Method to use (numba, torch, cupy, triton or all)")
     parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
-            "compute_accel_triton_naive", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
+            "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
             "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops",
             "compute_forces_numba_naive", "compute_forces_numba_tiled", 
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
@@ -87,9 +86,10 @@ if __name__== "__main__":
             "measure": measure_time_triton,
             "kernels": {
                 "compute_accel_triton_naive": compute_accel_triton_naive,
-                "compute_accel_triton_tensor": compute_accel_triton_tensor,
-                "compute_accel_triton_tiled": compute_accel_triton_tiled,
-                "compute_accel_triton_mixed": compute_accel_triton_mixed,
+                "compute_accel_triton_optimized": compute_accel_triton_optimized,
+                # "compute_accel_triton_tensor": compute_accel_triton_tensor,
+                # "compute_accel_triton_tiled": compute_accel_triton_tiled,
+                # "compute_accel_triton_mixed": compute_accel_triton_mixed,
             }
         },
         "pytorch": {
