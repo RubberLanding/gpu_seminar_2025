@@ -8,7 +8,7 @@ import numpy as np
 
 from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized, set_triton_config
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled, compute_forces_cupy_keops
-from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_tiled, gpu_step_pos, gpu_step_vel
+from nbody.numba_.simulation import compute_forces_numba_naive, gpu_step_pos, gpu_step_vel, compute_forces_numba_tiled, update_position_soa, update_velocity_soa
 from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized, compute_forces_optim # compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
 from nbody.benchmark.util import print_results, cleanup_gpu
 
@@ -145,57 +145,102 @@ def measure_time_cupy(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_
 
     return steps, total_time, steps_per_second, interactions_per_second
 
+
 def measure_time_numba(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_numba_naive, threads=128):
     # --- SETUP & TRANSFER ---
     N = pos_host.shape[0]
+    blocks = (N + threads - 1) // threads
+    
+    # Check if the passed function is the SoA optimized version
+    # getattr is used safely in case the function is wrapped/decorated
+    func_name = getattr(compute_forces_func, '__name__', 'Unknown')
+    is_soa = ('tiled' in func_name)
+    
     print(f"Running on GPU (Numba). N={N}, Steps={steps}")
-    print(f"Using Force Function: {compute_forces_func.__name__}")
+    print(f"Using Force Function: {func_name} (SoA Layout: {is_soa})")
 
-    pos  = numba.cuda.to_device(pos_host)
-    vel  = numba.cuda.to_device(vel_host)
-    mass = numba.cuda.to_device(mass_host)
-    force_old = numba.cuda.device_array((N, 3), dtype=np.float32)
-    force_new = numba.cuda.device_array((N, 3), dtype=np.float32)
-
-    # --- CONSTANTS PREP ---
-    blocks  = math.ceil(N / threads)
-
-    if compute_forces_func == compute_forces_numba_tiled: 
-        compute_forces_func = compute_forces_func(threads)
-
-    # --- WARM-UP ---
-    # Initial force calculation
-    compute_forces_func[blocks, threads](pos, mass, force_old, G, EPSILON)
-    for step in range(WARUM_UP_ITER):
-        gpu_step_pos[blocks, threads](pos, vel, mass, force_old, dt)
-        compute_forces_func[blocks, threads](pos, mass, force_new, G, EPSILON)
-        gpu_step_vel[blocks, threads](vel, mass, force_old, force_new, dt)
-        force_old, force_new = force_new, force_old
-
+    # Initialize timing events
     start_event = numba.cuda.event()
     end_event   = numba.cuda.event()
-    start_event.record()
 
-    # --- START SIMULATION ---
-    for step in range(steps):
+    if is_soa:
+        # =========================================================
+        # PATH A: STRUCTURE OF ARRAYS (SoA)
+        # =========================================================        
+        px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
+        py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
+        pz = np.ascontiguousarray(pos_host[:, 2], dtype=np.float32)
+        
+        vx = np.ascontiguousarray(vel_host[:, 0], dtype=np.float32)
+        vy = np.ascontiguousarray(vel_host[:, 1], dtype=np.float32)
+        vz = np.ascontiguousarray(vel_host[:, 2], dtype=np.float32)
 
-        # [Step A] Update Position: r(t+dt) = r(t) + v(t)dt + 0.5*a(t)dt^2
-        gpu_step_pos[blocks, threads](pos, vel, mass, force_old, dt)
+        mass = np.ascontiguousarray(mass_host, dtype=np.float32)
+        inv_mass = np.ascontiguousarray(1.0 / mass_host, dtype=np.float32)
 
-        # [Step B] Compute Forces: F(t+dt)
-        compute_forces_func[blocks, threads](pos, mass, force_new, G, EPSILON)
+        d_px, d_py, d_pz = numba.cuda.to_device(px), numba.cuda.to_device(py), numba.cuda.to_device(pz)
+        d_vx, d_vy, d_vz = numba.cuda.to_device(vx), numba.cuda.to_device(vy), numba.cuda.to_device(vz)
+        d_mass, d_inv_mass = numba.cuda.to_device(mass), numba.cuda.to_device(inv_mass)
 
-        # [Step C] Update Velocity: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
-        gpu_step_vel[blocks, threads](vel, mass, force_old, force_new, dt)
+        d_f_old_x = numba.cuda.device_array(N, dtype=np.float32)
+        d_f_old_y = numba.cuda.device_array(N, dtype=np.float32)
+        d_f_old_z = numba.cuda.device_array(N, dtype=np.float32)
+        
+        d_f_new_x = numba.cuda.device_array(N, dtype=np.float32)
+        d_f_new_y = numba.cuda.device_array(N, dtype=np.float32)
+        d_f_new_z = numba.cuda.device_array(N, dtype=np.float32)
 
-        # [Step D] Swap References
-        force_old, force_new = force_new, force_old
-    # ===================================================
+        # Warm-up
+        compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, N, np.float32(G), np.float32(EPSILON))
+        for step in range(WARUM_UP_ITER):
+            update_position_soa[blocks, threads](d_px, d_py, d_pz, d_vx, d_vy, d_vz, d_f_old_x, d_f_old_y, d_f_old_z, d_inv_mass, np.float32(dt), N)
+            compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, N, np.float32(G), np.float32(EPSILON))
+            update_velocity_soa[blocks, threads](d_vx, d_vy, d_vz, d_f_old_x, d_f_old_y, d_f_old_z, d_f_new_x, d_f_new_y, d_f_new_z, d_inv_mass, np.float32(dt), N)
+            d_f_old_x, d_f_new_x = d_f_new_x, d_f_old_x
+            d_f_old_y, d_f_new_y = d_f_new_y, d_f_old_y
+            d_f_old_z, d_f_new_z = d_f_new_z, d_f_old_z
+        
+        # Timed Simulation Loop
+        start_event.record()
+        for step in range(steps):
+            update_position_soa[blocks, threads](d_px, d_py, d_pz, d_vx, d_vy, d_vz, d_f_old_x, d_f_old_y, d_f_old_z, d_inv_mass, np.float32(dt), N)
+            compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, N, np.float32(G), np.float32(EPSILON))
+            update_velocity_soa[blocks, threads](d_vx, d_vy, d_vz, d_f_old_x, d_f_old_y, d_f_old_z, d_f_new_x, d_f_new_y, d_f_new_z, d_inv_mass, np.float32(dt), N)
+            
+            d_f_old_x, d_f_new_x = d_f_new_x, d_f_old_x
+            d_f_old_y, d_f_new_y = d_f_new_y, d_f_old_y
+            d_f_old_z, d_f_new_z = d_f_new_z, d_f_old_z
+        end_event.record()
 
-    end_event.record()
+    else:
+        # =========================================================
+        # PATH B: ARRAY OF STRUCTURES (AoS - Naive/Tiled)
+        # =========================================================
+        pos  = numba.cuda.to_device(pos_host)
+        vel  = numba.cuda.to_device(vel_host)
+        mass = numba.cuda.to_device(mass_host)
+        force_old = numba.cuda.device_array((N, 3), dtype=np.float32)
+        force_new = numba.cuda.device_array((N, 3), dtype=np.float32)
+
+        # Warm-up
+        compute_forces_func[blocks, threads](pos, mass, force_old, G, EPSILON)
+        for step in range(WARUM_UP_ITER):
+            gpu_step_pos[blocks, threads](pos, vel, mass, force_old, dt)
+            compute_forces_func[blocks, threads](pos, mass, force_new, G, EPSILON)
+            gpu_step_vel[blocks, threads](vel, mass, force_old, force_new, dt)
+            force_old, force_new = force_new, force_old
+
+        # Timed Simulation Loop
+        start_event.record()
+        for step in range(steps):
+            gpu_step_pos[blocks, threads](pos, vel, mass, force_old, dt)
+            compute_forces_func[blocks, threads](pos, mass, force_new, G, EPSILON)
+            gpu_step_vel[blocks, threads](vel, mass, force_old, force_new, dt)
+            force_old, force_new = force_new, force_old
+        end_event.record()
+
     end_event.synchronize()
     
-    # --- FINALIZE ---
     total_time = numba.cuda.event_elapsed_time(start_event, end_event) / 1000.0
     steps_per_second = steps / total_time
     interactions_per_second = steps * N * N / total_time

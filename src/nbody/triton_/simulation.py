@@ -96,12 +96,11 @@ def compute_accel_triton_naive(
         dy = py_j - py_i
         dz = pz_j - pz_i
         
-        # Physics: a = sum( m_j * r_vec / |r|^3 )
+        # a = sum( m_j * r_vec / |r|^3 )
         d2 = dx*dx + dy*dy + dz*dz + EPS * EPS
         inv_dist = tl.extra.cuda.libdevice.rsqrt(d2)
         inv_dist3 = inv_dist * inv_dist * inv_dist
         
-        # Accumulate mass-weighted direction
         mass_inv_dist3 = m_j * inv_dist3
         ax_sum += dx * mass_inv_dist3
         ay_sum += dy * mass_inv_dist3
