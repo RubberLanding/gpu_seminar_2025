@@ -6,8 +6,8 @@ import triton
 import cupy as cp
 import numpy as np
 
-from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_chunked, compute_forces_pytorch_keops, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized, set_triton_config
-from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_tiled, compute_forces_cupy_keops
+from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_keops, set_triton_config
+from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_optimized
 from nbody.numba_.simulation import compute_forces_numba_naive, gpu_step_pos, gpu_step_vel, compute_forces_numba_tiled, update_position_soa, update_velocity_soa
 from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized, compute_forces_optim # compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
 from nbody.benchmark.util import print_results, cleanup_gpu
@@ -83,67 +83,163 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
 
 def measure_time_cupy(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_cupy_naive, threads=128):
     # --- SETUP & TRANSFER ---
-    print(f"Running on GPU (CuPy). N={pos_host.shape[0]}, Steps={steps}")
+    N = pos_host.shape[0]
+    blocks = (N + threads - 1) // threads
+    print(f"Running on GPU (CuPy). N={N}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
     
-    pos  = cp.array(pos_host,  dtype=cp.float32)
-    vel  = cp.array(vel_host,  dtype=cp.float32)
-    mass = cp.array(mass_host, dtype=cp.float32)
-    N    = pos.shape[0]
-    
-    force_old = cp.zeros((N, 3), dtype=cp.float32)
-    force_new = cp.zeros((N, 3), dtype=cp.float32)
+    func_name = getattr(compute_forces_func, '__name__', 'Unknown')
+    is_soa = ("optimized" in func_name) 
 
-    # --- CONSTANTS PREP ---
-    dt_vec   = cp.float32(dt)
-    dt2_half = 0.5 * dt_vec * dt_vec
-    dt_half  = 0.5 * dt_vec
-    inv_m    = 1.0 / mass[:, None]
+    if is_soa:
+        # =========================================================
+        # STRUCTURE OF ARRAYS (e.g. optimized kernel)
+        # =========================================================
+        px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
+        py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
+        pz = np.ascontiguousarray(pos_host[:, 2], dtype=np.float32)
+        
+        vx = np.ascontiguousarray(vel_host[:, 0], dtype=np.float32)
+        vy = np.ascontiguousarray(vel_host[:, 1], dtype=np.float32)
+        vz = np.ascontiguousarray(vel_host[:, 2], dtype=np.float32)
+        
+        mass_arr = np.ascontiguousarray(mass_host, dtype=np.float32)
+        inv_mass_arr = np.ascontiguousarray(1.0 / mass_host, dtype=np.float32)
 
-    blocks  = (N + threads - 1) // threads
-    grid_cfg, block_cfg = (blocks,), (threads,)
+        d_px, d_py, d_pz = cp.asarray(px), cp.asarray(py), cp.asarray(pz)
+        d_vx, d_vy, d_vz = cp.asarray(vx), cp.asarray(vy), cp.asarray(vz)
+        d_mass, d_inv_mass = cp.asarray(mass_arr), cp.asarray(inv_mass_arr)
 
-    # --- WARM-UP ---
-    # Initial force calculation
-    compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_old, np.int32(N), np.float32(G), np.float32(EPSILON)))
-    
-    # Warm-up loop
-    for step in range(WARUM_UP_ITER):
-        pos += (vel * dt_vec) + (force_old * inv_m * dt2_half)
-        compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_new, np.int32(N), np.float32(G), np.float32(EPSILON)))
-        vel += (force_old + force_new) * inv_m * dt_half
-        force_old, force_new = force_new, force_old
+        d_f_old_x = cp.empty(N, dtype=cp.float32)
+        d_f_old_y = cp.empty(N, dtype=cp.float32)
+        d_f_old_z = cp.empty(N, dtype=cp.float32)
+        d_f_new_x = cp.empty(N, dtype=cp.float32)
+        d_f_new_y = cp.empty(N, dtype=cp.float32)
+        d_f_new_z = cp.empty(N, dtype=cp.float32)
+        
+        dt_fp32 = cp.float32(dt)
+        half_dt_fp32 = cp.float32(0.5 * dt)
+        half_dt2_fp32 = cp.float32(0.5 * dt * dt)
 
-    start_event = cp.cuda.Event()
-    end_event   = cp.cuda.Event()
-    start_event.record()
+        # --- WARM-UP ---
+        compute_forces_func(
+                (blocks,), (threads,), 
+                (d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.int32(N), np.float32(G), np.float32(EPSILON))
+            )
+                
+        for step in range(WARUM_UP_ITER):
+            d_px += (d_vx * dt_fp32) + (d_f_old_x * d_inv_mass * half_dt2_fp32)
+            d_py += (d_vy * dt_fp32) + (d_f_old_y * d_inv_mass * half_dt2_fp32)
+            d_pz += (d_vz * dt_fp32) + (d_f_old_z * d_inv_mass * half_dt2_fp32)
 
-    # --- START SIMULATION ---
-    for step in range(steps):
+            compute_forces_func(
+                (blocks,), (threads,), 
+                (d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.int32(N), np.float32(G), np.float32(EPSILON))
+            )
 
-        # [Step A] Update Position
-        pos += (vel * dt_vec) + (force_old * inv_m * dt2_half)
+            d_vx += (d_f_old_x + d_f_new_x) * d_inv_mass * half_dt_fp32
+            d_vy += (d_f_old_y + d_f_new_y) * d_inv_mass * half_dt_fp32
+            d_vz += (d_f_old_z + d_f_new_z) * d_inv_mass * half_dt_fp32
 
-        # [Step B] Compute Forces
-        compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_new, np.int32(N), np.float32(G), np.float32(EPSILON)))
+            d_f_old_x, d_f_new_x = d_f_new_x, d_f_old_x
+            d_f_old_y, d_f_new_y = d_f_new_y, d_f_old_y
+            d_f_old_z, d_f_new_z = d_f_new_z, d_f_old_z
+            
+        cp.cuda.Stream.null.synchronize()
 
-        # [Step C] Update Velocity
-        vel += (force_old + force_new) * inv_m * dt_half
+        # --- TIMED BENCHMARK ---
+        start_event = cp.cuda.Event()
+        end_event   = cp.cuda.Event()
+        start_event.record()
 
-        # [Step D] Swap References
-        force_old, force_new = force_new, force_old
-    # ===================================================
+        for step in range(steps):
+            d_px += (d_vx * dt_fp32) + (d_f_old_x * d_inv_mass * half_dt2_fp32)
+            d_py += (d_vy * dt_fp32) + (d_f_old_y * d_inv_mass * half_dt2_fp32)
+            d_pz += (d_vz * dt_fp32) + (d_f_old_z * d_inv_mass * half_dt2_fp32)
 
-    end_event.record()
-    end_event.synchronize()
-    
-    # --- FINALIZE ---
-    total_time = cp.cuda.get_elapsed_time(start_event, end_event) / 1000.0
-    steps_per_second = steps / total_time
-    interactions_per_second = steps * N * N / total_time
-    print_results(total_time, steps_per_second, interactions_per_second, N)
+            # FIXED CASTING HERE! 
+            compute_forces_func(
+                (blocks,), (threads,), 
+                (d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.int32(N), np.float32(G), np.float32(EPSILON))
+            )        
 
-    return steps, total_time, steps_per_second, interactions_per_second
+            d_vx += (d_f_old_x + d_f_new_x) * d_inv_mass * half_dt_fp32
+            d_vy += (d_f_old_y + d_f_new_y) * d_inv_mass * half_dt_fp32
+            d_vz += (d_f_old_z + d_f_new_z) * d_inv_mass * half_dt_fp32
+
+            d_f_old_x, d_f_new_x = d_f_new_x, d_f_old_x
+            d_f_old_y, d_f_new_y = d_f_new_y, d_f_old_y
+            d_f_old_z, d_f_new_z = d_f_new_z, d_f_old_z
+
+        end_event.record()
+        end_event.synchronize()
+        
+        # --- FINALIZE ---
+        total_time = cp.cuda.get_elapsed_time(start_event, end_event) / 1000.0
+        steps_per_second = steps / total_time
+        interactions_per_second = steps * N * N / total_time
+        print_results(total_time, steps_per_second, interactions_per_second, N)
+
+        return steps, total_time, steps_per_second, interactions_per_second
+
+    else:
+        pos  = cp.array(pos_host,  dtype=cp.float32)
+        vel  = cp.array(vel_host,  dtype=cp.float32)
+        mass = cp.array(mass_host, dtype=cp.float32)
+        N    = pos.shape[0]
+        
+        force_old = cp.zeros((N, 3), dtype=cp.float32)
+        force_new = cp.zeros((N, 3), dtype=cp.float32)
+
+        # --- CONSTANTS PREP ---
+        dt_vec   = cp.float32(dt)
+        dt2_half = 0.5 * dt_vec * dt_vec
+        dt_half  = 0.5 * dt_vec
+        inv_m    = 1.0 / mass[:, None]
+
+        grid_cfg, block_cfg = (blocks,), (threads,)
+
+        # --- WARM-UP ---
+        # Initial force calculation
+        compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_old, np.int32(N), np.float32(G), np.float32(EPSILON)))
+        
+        # Warm-up loop
+        for step in range(WARUM_UP_ITER):
+            pos += (vel * dt_vec) + (force_old * inv_m * dt2_half)
+            compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_new, np.int32(N), np.float32(G), np.float32(EPSILON)))
+            vel += (force_old + force_new) * inv_m * dt_half
+            force_old, force_new = force_new, force_old
+
+        start_event = cp.cuda.Event()
+        end_event   = cp.cuda.Event()
+        start_event.record()
+
+        # --- START SIMULATION ---
+        for step in range(steps):
+
+            # [Step A] Update Position
+            pos += (vel * dt_vec) + (force_old * inv_m * dt2_half)
+
+            # [Step B] Compute Forces
+            compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_new, np.int32(N), np.float32(G), np.float32(EPSILON)))
+
+            # [Step C] Update Velocity
+            vel += (force_old + force_new) * inv_m * dt_half
+
+            # [Step D] Swap References
+            force_old, force_new = force_new, force_old
+        # ===================================================
+
+        end_event.record()
+        end_event.synchronize()
+        
+        # --- FINALIZE ---
+        total_time = cp.cuda.get_elapsed_time(start_event, end_event) / 1000.0
+        steps_per_second = steps / total_time
+        interactions_per_second = steps * N * N / total_time
+        print_results(total_time, steps_per_second, interactions_per_second, N)
+
+        return steps, total_time, steps_per_second, interactions_per_second
 
 
 def measure_time_numba(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_numba_naive, threads=128):
@@ -342,14 +438,14 @@ if __name__== "__main__":
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
             "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
-            "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops",
+            "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops", "compute_forces_cupy_optimized",
             "compute_forces_numba_naive", "compute_forces_numba_tiled", 
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
             "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], 
             help="One or more force functions to benchmark.")
     parser.add_argument("-sr", "--store-results", action="store_true", help="Store the results.")
     parser.add_argument("-sp", "--store-plot", action="store_true", help="Store the performance plot.") 
-    parser.add_argument("-tn", "--tpb-numba", type=int, default=128, help="Threads per block for Numba. Should be a multiple of 32.")
+    parser.add_argument("-t", "--threads", type=int, default=128, help="Threads per block for Numba and Cupy. Should be a multiple of 32.")
     parser.add_argument("-bt", "--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
     args = parser.parse_args()
 
@@ -361,15 +457,16 @@ if __name__== "__main__":
             "measure": measure_time_cupy,
             "kernels": {
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
-                "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
-                "compute_forces_cupy_keops": compute_forces_cupy_keops,
+                "compute_forces_cupy_optimized": compute_forces_cupy_optimized
+                # "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
+                # "compute_forces_cupy_keops": compute_forces_cupy_keops,
             }
         },
         "numba": {
             "measure": measure_time_numba,
             "kernels": {
                 "compute_forces_numba_naive": compute_forces_numba_naive,
-                "compute_forces_numba_tiled": compute_forces_numba_tiled(args.tpb_numba),
+                "compute_forces_numba_tiled": compute_forces_numba_tiled(args.threads),
             }
         },
         "triton": {
@@ -386,10 +483,10 @@ if __name__== "__main__":
             "measure": measure_time_torch,
             "kernels": {
                 "compute_forces_pytorch_naive":     compute_forces_pytorch_naive,
-                "compute_forces_pytorch_chunked":   compute_forces_pytorch_chunked,
+                # "compute_forces_pytorch_chunked":   compute_forces_pytorch_chunked,
                 "compute_forces_pytorch_keops":     compute_forces_pytorch_keops,
-                "compute_forces_pytorch_matmul":    compute_forces_pytorch_matmul,
-                "compute_forces_pytorch_optimized": compute_forces_pytorch_optimized,
+                # "compute_forces_pytorch_matmul":    compute_forces_pytorch_matmul,
+                # "compute_forces_pytorch_optimized": compute_forces_pytorch_optimized,
                 }
         }
     }
@@ -416,7 +513,9 @@ if __name__== "__main__":
         measure_kwargs = {}
         if framework == "triton":
             measure_kwargs["block_size"] = args.bs_triton
-
+        elif framework == "cupy":
+            measure_kwargs["threads"] = args.threads
+            
         np.random.seed(42) 
         pos = np.random.rand(args.num_bodies, 3).astype(np.float32) * 100.0
         vel = np.random.rand(args.num_bodies, 3).astype(np.float32) - 0.5

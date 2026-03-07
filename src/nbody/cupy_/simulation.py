@@ -50,187 +50,239 @@ void compute_forces_cupy_naive(const float* pos, const float* mass, float* force
 }
 '''
 
-# CUDA with Shared Memory Tiling
-force_kernel_tiled = r'''
+force_kernel_optimized = r'''
 extern "C" __global__
-void compute_forces_cupy_tiled(const float* pos, const float* masses, float* force, 
-                          int N, float G, float EPSILON) {
-    
-    // Shared memory: 128 particles per tile
-    __shared__ float sh_pos[128 * 4]; 
-
+void compute_forces_cupy_optimized(
+    const float* __restrict__ pos_x,
+    const float* __restrict__ pos_y,
+    const float* __restrict__ pos_z,
+    const float* __restrict__ mass,
+    float* __restrict__ force_x,
+    float* __restrict__ force_y,
+    float* __restrict__ force_z,
+    int N, float G, float EPSILON)
+{
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
+    if (i >= N) return;
+
+    // Hoist target particle to registers
+    float rx = pos_x[i];
+    float ry = pos_y[i];
+    float rz = pos_z[i];
+    float m_i = mass[i];
+
+    float fx = 0.0f;
+    float fy = 0.0f;
+    float fz = 0.0f;
     
-    float r_i_x = 0.0f, r_i_y = 0.0f, r_i_z = 0.0f, m_i = 0.0f;
-    if (i < N) {
-        r_i_x = pos[i * 3 + 0];
-        r_i_y = pos[i * 3 + 1];
-        r_i_z = pos[i * 3 + 2];
-        m_i = masses[i];
+    // Precompute epsilon squared to save ALU cycles in the loop
+    float eps2 = EPSILON * EPSILON;
+
+    // Direct global memory read.
+    // The L1 Cache will 100% perfectly broadcast pos_x[j] to the entire warp!
+    #pragma unroll 8
+    for (int j = 0; j < N; j++) {
+        float dx = pos_x[j] - rx;
+        float dy = pos_y[j] - ry;
+        float dz = pos_z[j] - rz;
+
+        float d2 = dx*dx + dy*dy + dz*dz + eps2;
+        float inv_dist = rsqrtf(d2); 
+        float s = mass[j] * inv_dist * inv_dist * inv_dist;
+
+        fx += dx * s;
+        fy += dy * s;
+        fz += dz * s;
     }
 
-    for (int j_start = 0; j_start < N; j_start += 128) {
-        // Cooperative load
-        int j_load = j_start + threadIdx.x;
-        if (j_load < N) {
-            sh_pos[threadIdx.x * 4 + 0] = pos[j_load * 3 + 0];
-            sh_pos[threadIdx.x * 4 + 1] = pos[j_load * 3 + 1];
-            sh_pos[threadIdx.x * 4 + 2] = pos[j_load * 3 + 2];
-            sh_pos[threadIdx.x * 4 + 3] = masses[j_load];
-        } else {
-            sh_pos[threadIdx.x * 4 + 3] = 0.0f; // Padding
-        }
-        __syncthreads();
-
-        if (i < N) {
-            int tile_limit = (N - j_start < 128) ? (N - j_start) : 128;
-            for (int k = 0; k < tile_limit; k++) {
-                int j_global = j_start + k;
-                
-                // Self-interaction guard
-                if (i != j_global) {
-                    float dx = sh_pos[k * 4 + 0] - r_i_x;
-                    float dy = sh_pos[k * 4 + 1] - r_i_y;
-                    float dz = sh_pos[k * 4 + 2] - r_i_z;
-
-                    // NUMERICAL FIX: reciprocal square root instead of 1/(d^3)
-                    float d2 = dx*dx + dy*dy + dz*dz + (EPSILON * EPSILON);
-                    float inv_dist = rsqrtf(d2); 
-                    float inv_dist3 = inv_dist * inv_dist * inv_dist;
-                    
-                    float s = sh_pos[k * 4 + 3] * inv_dist3;
-                    f_x += dx * s;
-                    f_y += dy * s;
-                    f_z += dz * s;
-                }
-            }
-        }
-        __syncthreads();
-    }
-
-    if (i < N) {
-        force[i * 3 + 0] = G * m_i * f_x;
-        force[i * 3 + 1] = G * m_i * f_y;
-        force[i * 3 + 2] = G * m_i * f_z;
-    }
+    // Write coalesced forces back to global memory
+    force_x[i] = fx * G * m_i;
+    force_y[i] = fy * G * m_i;
+    force_z[i] = fz * G * m_i;
 }
 '''
 
 # Compile the kernel once
 compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math',))
-compute_forces_cupy_tiled = cp.RawKernel(force_kernel_tiled, 'compute_forces_cupy_tiled', options=('-use_fast_math',))
+compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math',))
 
-import torch 
-from pykeops.torch import LazyTensor
-def compute_forces_cupy_keops(grid, block, args):
-    """
-    Wrapper to make KeOps behave like a CuPy kernel in your loop.
-    args order matches your kernel: (pos, mass, force_out, N, G, EPS)
-    """
-    pos_cupy, mass_cupy, force_out_cupy, N, G_val, EPS_val = args
-    G_val = float(G_val)
-    EPS_val = float(EPS_val)
-    
-    # 1. Zero-Copy Bridge: CuPy -> PyTorch
-    # We use torch.as_tensor ensuring the underlying pointer is shared, not copied.
-    pos_torch = torch.as_tensor(pos_cupy, device='cuda')
-    mass_torch = torch.as_tensor(mass_cupy, device='cuda')
-    
-    # 2. Define Symbolic Variables
-    # x_i: (N, 1, 3) - target particles
-    # x_j: (1, N, 3) - source particles
-    x_i = LazyTensor(pos_torch[:, None, :]) 
-    x_j = LazyTensor(pos_torch[None, :, :])
-    m_j = LazyTensor(mass_torch[None, :, None]) # (1, N, 1) masses
-    
-    # 3. Define Symbolic Formula (Gravity)
-    # r_ij = x_j - x_i  (Using j-i convention to match your kernel's sign logic)
-    # Your kernel logic: f += (pos[i] - pos[j]) * mass[j] / dist^3
-    # Then final force = f * (-G * m_i) -> This flips the sign.
-    # So effectively: Force_i = G * m_i * sum( m_j * (pos[j] - pos[i]) / dist^3 )
-    
-    diff = x_j - x_i
-    sq_dist = (diff ** 2).sum(-1) + (EPS_val ** 2)
-    inv_dist3 = sq_dist.rsqrt() ** 3
-    
-    # The term inside the sum: mass_j * (x_j - x_i) / dist^3
-    force_term = m_j * diff * inv_dist3
-    
-    # 4. Perform Reduction
-    # sum(dim=1) collapses the 'j' axis (N neighbors)
-    acc_force_torch = force_term.sum(dim=1) 
-    
-    # 5. Apply constants (G * m_i)
-    # We do this in PyTorch to keep it fast
-    # Note: Your kernel multiplies by -G*m_i at the end because it computed (pos_i - pos_j).
-    # Since we computed (pos_j - pos_i) inside KeOps, we multiply by positive G*m_i.
-    final_force = acc_force_torch * (G_val * mass_torch[:, None])
-    
-    # 6. Write back to output array
-    # Copy the result into the pre-allocated CuPy array
-    # We have to copy here because 'force_out' is provided by the simulation loop
-    # and 'final_force' is a new tensor created by KeOps.
-    # However, this copy is Device-to-Device (extremely fast).
-    cp.copyto(force_out_cupy, cp.asarray(final_force))
+# Compile the kernel once
+compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math',))
+compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math',))
 
-def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_keops, threads=128, store_history=False):
+def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_optimized, threads=128, store_history=False):
     # --- SETUP & TRANSFER ---
-    print(f"Running on GPU (CuPy). N={pos_host.shape[0]}, Steps={steps}")
+    N = pos_host.shape[0]
+    blocks = (N + threads - 1) // threads
+
+    print(f"Running on GPU (CuPy). N={N}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
-    N    = pos_host.shape[0]
-    pos  = cp.array(pos_host,  dtype=cp.float32)
-    vel  = cp.array(vel_host,  dtype=cp.float32)
-    mass = cp.array(mass_host, dtype=cp.float32)
-    force_old = cp.zeros((N, 3), dtype=cp.float32)
-    force_new = cp.zeros((N, 3), dtype=cp.float32)
-
-    # --- CONSTANTS PREP ---
-    dt_vec   = cp.float32(dt)
-    dt2_half = 0.5 * dt_vec * dt_vec
-    dt_half  = 0.5 * dt_vec
-    inv_m    = 1.0 / mass[:, None]
-
-    blocks  = (N + threads - 1) // threads
-    grid_cfg, block_cfg = (blocks,), (threads,)
     
+    func_name = getattr(compute_forces_func, '__name__', 'Unknown')
+    is_soa = ("optimized" in func_name) 
+
     # History buffer
     if store_history:
         pos_history = np.zeros((steps + 1, N, 3), dtype=np.float32)
         vel_history = np.zeros((steps + 1, N, 3), dtype=np.float32)
-        pos_history[0], vel_history[0] = pos.get(), vel.get() # .get() required for numpy conversion
+        pos_history[0], vel_history[0] = pos_host.copy(), vel_host.copy() 
     else:
         pos_history, vel_history = None, None
 
-    # Initial force calculation
-    compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_old, np.int32(N), np.float32(G), np.float32(EPS)))
+    if is_soa:
+        # =========================================================
+        # STRUCTURE OF ARRAYS (e.g. optimized kernel)
+        # =========================================================
+        px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
+        py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
+        pz = np.ascontiguousarray(pos_host[:, 2], dtype=np.float32)
+        
+        vx = np.ascontiguousarray(vel_host[:, 0], dtype=np.float32)
+        vy = np.ascontiguousarray(vel_host[:, 1], dtype=np.float32)
+        vz = np.ascontiguousarray(vel_host[:, 2], dtype=np.float32)
+        
+        mass_arr = np.ascontiguousarray(mass_host, dtype=np.float32)
+        inv_mass_arr = np.ascontiguousarray(1.0 / mass_host, dtype=np.float32)
 
-    # --- START SIMULATION ---
-    for step in range(steps):
+        # Transfer to GPU
+        d_px, d_py, d_pz = cp.asarray(px), cp.asarray(py), cp.asarray(pz)
+        d_vx, d_vy, d_vz = cp.asarray(vx), cp.asarray(vy), cp.asarray(vz)
+        d_mass, d_inv_mass = cp.asarray(mass_arr), cp.asarray(inv_mass_arr)
+
+        d_f_old_x = cp.empty(N, dtype=cp.float32)
+        d_f_old_y = cp.empty(N, dtype=cp.float32)
+        d_f_old_z = cp.empty(N, dtype=cp.float32)
         
-        # [Step A] Update Position
-        pos += (vel * dt_vec) + (force_old * inv_m * dt2_half)
+        d_f_new_x = cp.empty(N, dtype=cp.float32)
+        d_f_new_y = cp.empty(N, dtype=cp.float32)
+        d_f_new_z = cp.empty(N, dtype=cp.float32)
+
+        G = np.float32(6.6743e-11)
+        EPSILON = np.float32(1e-5)
         
-        # [Step B] Compute Forces
-        compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_new, np.int32(N), np.float32(G), np.float32(EPS)))
+        compute_forces_func(
+                (blocks,), (threads,), 
+                (d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.int32(N), np.float32(G), np.float32(EPSILON))
+            )        
         
-        # [Step C] Update Velocity
-        vel += (force_old + force_new) * inv_m * dt_half
-        
+        cp.cuda.Stream.null.synchronize()
+
+        print("\n--- DEBUG STEP 0 ---")
+        print(f"Type of G: {type(G)}, Type of EPS: {type(EPSILON)}")
+        print(f"Force X (First 3): {d_f_old_x[:3].get()}")
+        print(f"Positions X (First 3): {d_px[:3].get()}")
+        print("--------------------\n")
+
+        dt_fp32 = cp.float32(dt)
+        half_dt_fp32 = cp.float32(0.5 * dt)
+        half_dt2_fp32 = cp.float32(0.5 * dt * dt)
+
+        # --- MAIN LOOP ---
+        for step in range(steps):
+            # Step A: Update Position (FIXED)
+            d_px += (d_vx * dt_fp32) + (d_f_old_x * d_inv_mass * half_dt2_fp32)
+            d_py += (d_vy * dt_fp32) + (d_f_old_y * d_inv_mass * half_dt2_fp32)
+            d_pz += (d_vz * dt_fp32) + (d_f_old_z * d_inv_mass * half_dt2_fp32)
+
+            # Step B: Compute Forces
+            compute_forces_func(
+                (blocks,), (threads,), 
+                (d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.int32(N), np.float32(G), np.float32(EPSILON))
+            )        
+
+            # Step C: Update Velocity
+            d_vx += (d_f_old_x + d_f_new_x) * d_inv_mass * half_dt_fp32
+            d_vy += (d_f_old_y + d_f_new_y) * d_inv_mass * half_dt_fp32
+            d_vz += (d_f_old_z + d_f_new_z) * d_inv_mass * half_dt_fp32
+
+            if step % 50 == 0:
+                print(f"\n--- DEBUG STEP {step+1} ---")
+                print(f"Force X (First 3): {d_f_old_x[:3].get()}")
+                print(f"Positions X (First 3): {d_px[:3].get()}")
+                print("--------------------\n")
+
+            if store_history:
+                pos_history[step + 1, :, 0] = d_px.get()
+                pos_history[step + 1, :, 1] = d_py.get()
+                pos_history[step + 1, :, 2] = d_pz.get()
+
+                vel_history[step + 1, :, 0] = d_vx.get()
+                vel_history[step + 1, :, 1] = d_vy.get()
+                vel_history[step + 1, :, 2] = d_vz.get()
+
+            # Step D: Pointer Swap
+            d_f_old_x, d_f_new_x = d_f_new_x, d_f_old_x
+            d_f_old_y, d_f_new_y = d_f_new_y, d_f_old_y
+            d_f_old_z, d_f_new_z = d_f_new_z, d_f_old_z
+
+        # --- FINALIZE ---
         if store_history:
-            pos_history[step + 1] = pos.get()
-            vel_history[step + 1] = vel.get()
+            return pos_history, vel_history
+        else:
+            pos = np.zeros((N, 3), dtype=np.float32)
+            vel = np.zeros((N, 3), dtype=np.float32)
+            
+            # FIX 3: Use .get()
+            pos[:, 0] = d_px.get()
+            pos[:, 1] = d_py.get()
+            pos[:, 2] = d_pz.get()
 
-        # [Step D] Swap References
-        force_old, force_new = force_new, force_old
-    # ===================================================
+            vel[:, 0] = d_vx.get()
+            vel[:, 1] = d_vy.get()
+            vel[:, 2] = d_vz.get()
 
-    # --- FINALIZE ---
-    if store_history:
-        return pos_history, vel_history
+            return pos, vel
+
     else:
-        return pos.get(), vel.get()
-    
+        # =========================================================
+        # ARRAY OF STRUCTURES (e.g. naive kernel)
+        # =========================================================
+        pos  = cp.array(pos_host,  dtype=cp.float32)
+        vel  = cp.array(vel_host,  dtype=cp.float32)
+        mass = cp.array(mass_host, dtype=cp.float32)
+        force_old = cp.zeros((N, 3), dtype=cp.float32)
+        force_new = cp.zeros((N, 3), dtype=cp.float32)
+
+        G_val = np.float32(6.6743e-11)
+        EPSILON_val = np.float32(1e-5)
+
+        # --- CONSTANTS PREP ---
+        dt_vec   = cp.float32(dt)
+        dt2_half = 0.5 * dt_vec * dt_vec
+        dt_half  = 0.5 * dt_vec
+        inv_m    = 1.0 / mass[:, None]
+
+        grid_cfg, block_cfg = (blocks,), (threads,)
+
+        # Initial force calculation
+        compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_old, np.int32(N), G_val, EPSILON_val))
+
+        # --- START SIMULATION ---
+        for step in range(steps):
+            
+            # [Step A] Update Position
+            pos += (vel * dt_vec) + (force_old * inv_m * dt2_half)
+            
+            # [Step B] Compute Forces
+            compute_forces_func(grid_cfg, block_cfg, (pos, mass, force_new, np.int32(N), G_val, EPSILON_val))
+            
+            # [Step C] Update Velocity
+            vel += (force_old + force_new) * inv_m * dt_half
+            
+            if store_history:
+                pos_history[step + 1] = pos.get()
+                vel_history[step + 1] = vel.get()
+
+            # [Step D] Swap References
+            force_old, force_new = force_new, force_old
+        # ===================================================
+
+        # --- FINALIZE ---
+        if store_history:
+            return pos_history, vel_history
+        else:
+            return pos.get(), vel.get()
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Cupy N-Body Simulation")
@@ -245,6 +297,6 @@ if __name__ == "__main__":
     
     print(f"Simulation with Cupy. Initializing {args.num_bodies} bodies...")
 
-    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=compute_forces_cupy_keops)
+    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=compute_forces_cupy_optimized)
     
     print("Simulation step complete.")
