@@ -64,7 +64,7 @@ def gpu_step_vel(vel, masses, F_old, F_new, dt):
 def compute_forces_numba_tiled(threads_per_block):
     TPB = threads_per_block
 
-    @cuda.jit(fastmath=True)
+    @cuda.jit(fastmath=True, lineinfo=True)
     def compute_forces_numba_tiled_(pos_x, pos_y, pos_z, mass, 
                                 force_x, force_y, force_z, 
                                 N, G, EPSILON):
@@ -135,7 +135,7 @@ def compute_forces_numba_tiled(threads_per_block):
     compute_forces_numba_tiled_.__name__ = f"compute_forces_numba_tiled_{TPB}"
     return compute_forces_numba_tiled_
 
-@cuda.jit
+@cuda.jit(fastmath=True, lineinfo=True)
 def update_position_soa(pos_x, pos_y, pos_z, 
                         vel_x, vel_y, vel_z, 
                         force_x, force_y, force_z, 
@@ -149,7 +149,7 @@ def update_position_soa(pos_x, pos_y, pos_z,
         pos_y[i] += (vel_y[i] * dt) + (force_y[i] * inv_m * dt2_half)
         pos_z[i] += (vel_z[i] * dt) + (force_z[i] * inv_m * dt2_half)
 
-@cuda.jit
+@cuda.jit(fastmath=True, lineinfo=True)
 def update_velocity_soa(vel_x, vel_y, vel_z, 
                         f_old_x, f_old_y, f_old_z, 
                         f_new_x, f_new_y, f_new_z, 

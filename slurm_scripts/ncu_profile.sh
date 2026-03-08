@@ -46,10 +46,11 @@ NCU_EXTRA_FLAGS=""
 
 case $MODE in
     "numba")
-        NCU_EXTRA_FLAGS="-k regex:compute_forces.* --import-source yes --resolve-source-file \"$SCRIPT_PATH\""
+        # Removed the \" around the path so NCU reads it cleanly
+        NCU_EXTRA_FLAGS="-k regex:compute_forces.* --import-source yes --source-folders $BASE_DIR/src/nbody"
         echo "Profiling Numba with LineInfo support..."
-        ;;  
-
+        ;;
+        
     "cupy")
         export CUPY_CACHE_SAVE_CUDA_SOURCE=1
         NCU_EXTRA_FLAGS="-k regex:compute_forces.* --import-source yes --source-folder ~/.cupy/kernel_cache" 
@@ -73,13 +74,13 @@ esac
 
 echo "Starting Nsight Compute for $MODE..."
 
-# FORCE CUPY TO RECOMPILE: Clear the old cached kernels
-if [ "$MODE" == "cupy" ]; then
-    echo "Clearing CuPy kernel cache..."
-    unset CUPY_CUDA_COMPILE_WITH_DEBUG
-    rm -rf ~/.cupy/kernel_cache/*
-    rm -rf ~/.nv/ComputeCache/*
-fi
+echo "Clearing NVIDIA compute cache and Python caches..."
+export CUDA_CACHE_DISABLE=1
+export NUMBA_ENABLE_PROFILING=1
+unset CUPY_CUDA_COMPILE_WITH_DEBUG
+rm -rf ~/.cupy/kernel_cache/*
+rm -rf ~/.nv/ComputeCache/*
+find "$BASE_DIR" -type d -name "__pycache__" -exec rm -rf {} +
 
 ncu --section SpeedOfLight \
     --section MemoryWorkloadAnalysis \
