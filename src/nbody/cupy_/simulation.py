@@ -103,12 +103,8 @@ void compute_forces_cupy_optimized(
 '''
 
 # Compile the kernel once
-compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math',))
-compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math',))
-
-# Compile the kernel once
-compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math',))
-compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math',))
+compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math', '-lineinfo'), backend='nvcc')
+compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math', '-lineinfo'), backend='nvcc')
 
 def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_optimized, threads=128, store_history=False):
     # --- SETUP & TRANSFER ---
