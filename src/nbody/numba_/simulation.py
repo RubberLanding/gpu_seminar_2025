@@ -169,8 +169,6 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
     N = pos_host.shape[0]
     blocks = (N + threads - 1) // threads
 
-    # Check if the passed function is the SoA optimized version
-    # getattr is used safely in case the function is wrapped/decorated
     func_name = getattr(compute_forces_func, '__name__', 'Unknown')
     if 'optimzed' in func_name:
         is_soa = True

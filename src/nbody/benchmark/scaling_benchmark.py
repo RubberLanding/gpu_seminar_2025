@@ -7,7 +7,7 @@ from nbody.benchmark.util import cleanup_gpu, store_results, plot_results, creat
 from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_keops 
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_optimized
 from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_optimized
-from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized 
+from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized
 
 def run_scaling_benchmark(measure_time_func, n_particles, compute_forces=None, **kwargs):
     results = {
@@ -51,14 +51,14 @@ if __name__== "__main__":
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
-            "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
+            "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_soa"
             "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops", "compute_forces_cupy_optimized",
             "compute_forces_numba_naive", "compute_forces_numba_tiled", "compute_forces_numba_optimized", 
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
             "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], 
             help="One or more force functions to benchmark.")
     parser.add_argument("-t", "--threads", type=int, default=128, help="Threads per block for Numba and Cupy. Should be a multiple of 32.")
-    parser.add_argument("-bt", "--bs-triton", type=int, default=32, help="Block size for Triton. Should be a multiple of 16.")
+    parser.add_argument("-bs", "--block-size", type=int, default=32, help="Block size for Triton. Must be a multiple of 32.")
     parser.add_argument("-sr", "--store-results", action="store_true", help="Store the results.")
     parser.add_argument("-sp", "--store-plot", action="store_true", help="Store the performance plot.") 
     args = parser.parse_args()
@@ -73,15 +73,14 @@ if __name__== "__main__":
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
                 "compute_forces_cupy_optimized": compute_forces_cupy_optimized,
                 # "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
-                # "compute_forces_cupy_keops": compute_forces_cupy_keops,
             }
         },
         "numba": {
             "measure": measure_time_numba,
             "kernels": {
                 "compute_forces_numba_naive": compute_forces_numba_naive,
-                # "compute_forces_numba_tiled": compute_forces_numba_tiled(args.threads),
                 "compute_forces_numba_optimized": compute_forces_numba_optimized(args.threads),
+                # "compute_forces_numba_tiled": compute_forces_numba_tiled(args.threads),
             }
         },
         "triton": {
@@ -89,9 +88,7 @@ if __name__== "__main__":
             "kernels": {
                 "compute_accel_triton_naive": compute_accel_triton_naive,
                 "compute_accel_triton_optimized": compute_accel_triton_optimized,
-                # "compute_accel_triton_tensor": compute_accel_triton_tensor,
-                # "compute_accel_triton_tiled": compute_accel_triton_tiled,
-                # "compute_accel_triton_mixed": compute_accel_triton_mixed,
+                # "compute_accel_triton_soa": compute_accel_triton_soa,
             }
         },
         "pytorch": {
@@ -99,9 +96,6 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_pytorch_naive":     compute_forces_pytorch_naive,
                 "compute_forces_pytorch_keops":     compute_forces_pytorch_keops,
-                # "compute_forces_pytorch_chunked":   compute_forces_pytorch_chunked,
-                # "compute_forces_pytorch_matmul":    compute_forces_pytorch_matmul,
-                # "compute_forces_pytorch_optimized": compute_forces_pytorch_optimized,
                 }
         }
     }
@@ -129,7 +123,7 @@ if __name__== "__main__":
         # Framework-specific arguments
         measure_kwargs = {}
         if framework == "triton":
-            measure_kwargs["block_size"] = args.bs_triton
+            measure_kwargs["block_size"] = args.block_size
         elif framework == "cupy":
             measure_kwargs["threads"] = args.threads
 
