@@ -37,7 +37,7 @@ def compute_forces_numba_naive(r_pos, masses, r_force, G, EPSILON):
         r_force[i, 2] = -G * m_i * ftmp_z
 
 @cuda.jit(lineinfo=True, fastmath=True)
-def gpu_step_pos(pos, vel, masses, F_old, dt):
+def update_position(pos, vel, masses, F_old, dt):
     """CUDA Kernel for Position Update (Verlet Step 1)."""
     i = cuda.grid(1)
     if i < pos.shape[0]:
@@ -49,7 +49,7 @@ def gpu_step_pos(pos, vel, masses, F_old, dt):
         pos[i, 2] += vel[i, 2] * dt + (F_old[i, 2] * inv_m) * dt2_half
 
 @cuda.jit(lineinfo=True, fastmath=True)
-def gpu_step_vel(vel, masses, F_old, F_new, dt):
+def update_velocity(vel, masses, F_old, F_new, dt):
     """CUDA Kernel for Velocity Update (Verlet Step 2)."""
     i = cuda.grid(1)
     if i < vel.shape[0]:
@@ -61,108 +61,108 @@ def gpu_step_vel(vel, masses, F_old, F_new, dt):
         vel[i, 2] += (F_old[i, 2] + F_new[i, 2]) * inv_m * dt_half
 
 
-def compute_forces_numba_tiled(threads_per_block):
+def compute_forces_numba_optimized(threads_per_block=128):
     TPB = threads_per_block
 
-    @cuda.jit(fastmath=True, lineinfo=True)
-    def compute_forces_numba_tiled_(pos_x, pos_y, pos_z, mass, 
-                                force_x, force_y, force_z, 
-                                N, G, EPSILON):
-        
-        # Allocate SoA arrays for coalesced memory access
-        sx = cuda.shared.array(shape=TPB, dtype=float32)
-        sy = cuda.shared.array(shape=TPB, dtype=float32)
-        sz = cuda.shared.array(shape=TPB, dtype=float32)
-        sm = cuda.shared.array(shape=TPB, dtype=float32)
-
+    @cuda.jit(lineinfo=True, fastmath=True)
+    def compute_forces_numba_optimized_(pos_x, pos_y, pos_z, masses, force_x, force_y, force_z, G_val, EPS_val):
+        N = pos_x.shape[0]
         tx = cuda.threadIdx.x
         i = cuda.grid(1)
-        rx = ry = rz = m_i = 0.0
-        fx = fy = fz = 0.0
         
+        # Force constants into 32-bit registers
+        G_f32 = float32(G_val)
+        EPS2_f32 = float32(EPS_val * EPS_val)
+        
+        # 1D Shared memory arrays for perfectly coalesced memory access
+        sh_pos_x = cuda.shared.array(shape=TPB, dtype=float32)
+        sh_pos_y = cuda.shared.array(shape=TPB, dtype=float32)
+        sh_pos_z = cuda.shared.array(shape=TPB, dtype=float32)
+        sh_mass  = cuda.shared.array(shape=TPB, dtype=float32)
+        
+        # Explicit 32-bit accumulators
+        ftmp_x = float32(0.0)
+        ftmp_y = float32(0.0)
+        ftmp_z = float32(0.0)
+        
+        # Pre-load current body
         if i < N:
-            rx = pos_x[i]
-            ry = pos_y[i]
-            rz = pos_z[i]
-            m_i = mass[i]
-
-        # Loop over all tiles
-        num_tiles = (N + TPB - 1) // TPB
-        for t in range(num_tiles):
+            r_i_x = pos_x[i]
+            r_i_y = pos_y[i]
+            r_i_z = pos_z[i]
+            m_i = masses[i]
+        else:
+            r_i_x = r_i_y = r_i_z = m_i = float32(0.0)
             
-            j = t * TPB + tx
-            if j < N:
-                sx[tx] = pos_x[j]
-                sy[tx] = pos_y[j]
-                sz[tx] = pos_z[j]
-                sm[tx] = mass[j]
+        num_tiles = (N + TPB - 1) // TPB
+        
+        for tile in range(num_tiles):
+            idx = tile * TPB + tx
+            
+            # Coalesced global load into shared memory
+            if idx < N:
+                sh_pos_x[tx] = pos_x[idx]
+                sh_pos_y[tx] = pos_y[idx]
+                sh_pos_z[tx] = pos_z[idx]
+                sh_mass[tx] = masses[idx]
             else:
-                sx[tx] = 0.0
-                sy[tx] = 0.0
-                sz[tx] = 0.0
-                sm[tx] = 0.0
+                sh_pos_x[tx] = float32(0.0)
+                sh_pos_y[tx] = float32(0.0)
+                sh_pos_z[tx] = float32(0.0)
+                sh_mass[tx] = float32(0.0)
                 
-            # Wait for the tile to load
             cuda.syncthreads() 
-
-            # Compute forces
+            
             if i < N:
-                # Because TPB is constant, this loop should unroll.
-                for k in range(TPB):
-                    dx = sx[k] - rx
-                    dy = sy[k] - ry
-                    dz = sz[k] - rz
-
-                    d2 = dx*dx + dy*dy + dz*dz + EPSILON**2
-                    inv_dist = 1.0 / math.sqrt(d2) 
+                for j in range(TPB):
+                    dx = r_i_x - sh_pos_x[j]
+                    dy = r_i_y - sh_pos_y[j]
+                    dz = r_i_z - sh_pos_z[j]
                     
+                    d2 = dx*dx + dy*dy + dz*dz
+                    
+                    # Strict 32-bit math triggers hardware RSQRT
+                    inv_dist = float32(1.0) / math.sqrt(d2 + EPS2_f32)
                     inv_dist3 = inv_dist * inv_dist * inv_dist
-                    s = sm[k] * inv_dist3
                     
-                    fx += dx * s
-                    fy += dy * s
-                    fz += dz * s
-
-            # Wait for math to finish before overwriting tile
+                    val = sh_mass[j] * inv_dist3
+                    
+                    ftmp_x += dx * val
+                    ftmp_y += dy * val
+                    ftmp_z += dz * val
+                    
             cuda.syncthreads() 
-
-        # Coalesced Memory Writes
+            
         if i < N:
-            force_x[i] = fx * G * m_i
-            force_y[i] = fy * G * m_i
-            force_z[i] = fz * G * m_i
+            force_x[i] = -G_f32 * m_i * ftmp_x
+            force_y[i] = -G_f32 * m_i * ftmp_y
+            force_z[i] = -G_f32 * m_i * ftmp_z
 
-    compute_forces_numba_tiled_.__name__ = f"compute_forces_numba_tiled_{TPB}"
-    return compute_forces_numba_tiled_
+    compute_forces_numba_optimized_.__name__ = f"compute_forces_numba_optimized_{TPB}"
+    return compute_forces_numba_optimized_
 
-@cuda.jit(fastmath=True, lineinfo=True)
-def update_position_soa(pos_x, pos_y, pos_z, 
-                        vel_x, vel_y, vel_z, 
-                        force_x, force_y, force_z, 
-                        inv_mass, dt, N):
+@cuda.jit(lineinfo=True, fastmath=True)
+def update_position_soa(pos_x, pos_y, pos_z, vel_x, vel_y, vel_z, masses, F_old_x, F_old_y, F_old_z, dt):
     i = cuda.grid(1)
-    if i < N:
-        inv_m = inv_mass[i]
-        dt2_half = 0.5 * dt * dt
+    if i < pos_x.shape[0]:
+        inv_m = float32(1.0) / masses[i]
+        dt_f32 = float32(dt)
+        dt2_half = float32(0.5) * dt_f32 * dt_f32
         
-        pos_x[i] += (vel_x[i] * dt) + (force_x[i] * inv_m * dt2_half)
-        pos_y[i] += (vel_y[i] * dt) + (force_y[i] * inv_m * dt2_half)
-        pos_z[i] += (vel_z[i] * dt) + (force_z[i] * inv_m * dt2_half)
+        pos_x[i] += vel_x[i] * dt_f32 + (F_old_x[i] * inv_m) * dt2_half
+        pos_y[i] += vel_y[i] * dt_f32 + (F_old_y[i] * inv_m) * dt2_half
+        pos_z[i] += vel_z[i] * dt_f32 + (F_old_z[i] * inv_m) * dt2_half
 
-@cuda.jit(fastmath=True, lineinfo=True)
-def update_velocity_soa(vel_x, vel_y, vel_z, 
-                        f_old_x, f_old_y, f_old_z, 
-                        f_new_x, f_new_y, f_new_z, 
-                        inv_mass, dt, N):
+@cuda.jit(lineinfo=True, fastmath=True)
+def update_velocity_soa(vel_x, vel_y, vel_z, masses, F_old_x, F_old_y, F_old_z, F_new_x, F_new_y, F_new_z, dt):
     i = cuda.grid(1)
-    if i < N:
-        inv_m = inv_mass[i]
-        dt_half = 0.5 * dt
+    if i < vel_x.shape[0]:
+        inv_m = float32(1.0) / masses[i]
+        dt_half = float32(0.5) * float32(dt)
         
-        vel_x[i] += (f_old_x[i] + f_new_x[i]) * inv_m * dt_half
-        vel_y[i] += (f_old_y[i] + f_new_y[i]) * inv_m * dt_half
-        vel_z[i] += (f_old_z[i] + f_new_z[i]) * inv_m * dt_half
-
+        vel_x[i] += (F_old_x[i] + F_new_x[i]) * inv_m * dt_half
+        vel_y[i] += (F_old_y[i] + F_new_y[i]) * inv_m * dt_half
+        vel_z[i] += (F_old_z[i] + F_new_z[i]) * inv_m * dt_half
 
 def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_numba_naive, threads=128, store_history=False):
     # --- SETUP & TRANSFER ---
@@ -172,7 +172,9 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
     # Check if the passed function is the SoA optimized version
     # getattr is used safely in case the function is wrapped/decorated
     func_name = getattr(compute_forces_func, '__name__', 'Unknown')
-    is_soa = ('tiled' in func_name)
+    if 'optimzed' in func_name:
+        is_soa = True
+        compute_forces_func = compute_forces_func(threads)
 
     print(f"Running on GPU (Numba). N={N}, Steps={steps}")
     print(f"Using Force Function: {func_name}")
@@ -190,7 +192,6 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         # =========================================================
         # PATH A: STRUCTURE OF ARRAYS (SoA)
         # =========================================================
-        compute_forces_func = compute_forces_func(threads)
 
         px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
         py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
@@ -201,11 +202,10 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         vz = np.ascontiguousarray(vel_host[:, 2], dtype=np.float32)
 
         mass = np.ascontiguousarray(mass_host, dtype=np.float32)
-        inv_mass = np.ascontiguousarray(1.0 / mass_host, dtype=np.float32)
 
         d_px, d_py, d_pz = cuda.to_device(px), cuda.to_device(py), cuda.to_device(pz)
         d_vx, d_vy, d_vz = cuda.to_device(vx), cuda.to_device(vy), cuda.to_device(vz)
-        d_mass, d_inv_mass = cuda.to_device(mass), cuda.to_device(inv_mass)
+        d_mass = cuda.to_device(mass)
 
         d_f_old_x = cuda.device_array(N, dtype=np.float32)
         d_f_old_y = cuda.device_array(N, dtype=np.float32)
@@ -216,7 +216,7 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         d_f_new_z = cuda.device_array(N, dtype=np.float32)
 
         # Initial force computation
-        compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, N, np.float32(G), np.float32(EPSILON))
+        compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, np.float32(G), np.float32(EPSILON))
 
         cuda.synchronize()
         cuda.profile_start()
@@ -224,13 +224,13 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         # --- START SIMULATION ---
         for step in range(steps):
             # [Step A] Update Position: r(t+dt) = r(t) + v(t)dt + 0.5*a(t)dt^2
-            update_position_soa[blocks, threads](d_px, d_py, d_pz, d_vx, d_vy, d_vz, d_f_old_x, d_f_old_y, d_f_old_z, d_inv_mass, np.float32(dt), N)
+            update_position_soa[blocks, threads](d_px, d_py, d_pz, d_vx, d_vy, d_vz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, np.float32(dt))
             
             # [Step B] Compute Forces: F(t+dt)
-            compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, N, np.float32(G), np.float32(EPSILON))
+            compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.float32(G), np.float32(EPSILON))
             
             # [Step C] Update Velocity: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
-            update_velocity_soa[blocks, threads](d_vx, d_vy, d_vz, d_f_old_x, d_f_old_y, d_f_old_z, d_f_new_x, d_f_new_y, d_f_new_z, d_inv_mass, np.float32(dt), N)
+            update_velocity_soa[blocks, threads](d_vx, d_vy, d_vz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, d_f_new_x, d_f_new_y, d_f_new_z, np.float32(dt))
             
             if store_history:                
                 pos_history[step + 1, :, 0] = d_px.copy_to_host()
@@ -281,13 +281,13 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         for step in range(steps):
             
             # [Step A] Update Position: r(t+dt) = r(t) + v(t)dt + 0.5*a(t)dt^2
-            gpu_step_pos[blocks, threads](pos, vel, mass, force_old, dt)
+            update_position[blocks, threads](pos, vel, mass, force_old, dt)
             
             # [Step B] Compute Forces: F(t+dt)
             compute_forces_func[blocks, threads](pos, mass, force_new, G, EPSILON)
             
             # [Step C] Update Velocity: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
-            gpu_step_vel[blocks, threads](vel, mass, force_old, force_new, dt)
+            update_velocity[blocks, threads](vel, mass, force_old, force_new, dt)
             
             if store_history:
                 pos.copy_to_host(pos_history[step + 1])

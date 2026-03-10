@@ -50,9 +50,9 @@ void compute_forces_cupy_naive(const float* pos, const float* mass, float* force
 }
 '''
 
-force_kernel_tiled = r'''
+force_kernel_optimized = r'''
 extern "C" __global__
-void compute_forces_cupy_tiled(const float* pos, const float* mass, float* force, 
+void compute_forces_cupy_optimized(const float* pos, const float* mass, float* force, 
                                    int n, float G, float EPSILON) {
     // Allocate shared memory for the tile (supports up to 1024 threads per block)
     __shared__ float sh_px[1024];
@@ -133,103 +133,9 @@ void compute_forces_cupy_tiled(const float* pos, const float* mass, float* force
 
 # Compile the kernel once
 compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math', '-lineinfo', '-std=c++17'), backend='nvcc')
-compute_forces_cupy_tiled = cp.RawKernel(force_kernel_tiled, 'compute_forces_cupy_tiled', options=('-use_fast_math', '-lineinfo', '-std=c++17'), backend='nvcc')
-compute_forces_cupy_optimized = None
+compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math', '-lineinfo', '-std=c++17'), backend='nvcc')
 
 def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_naive, threads=128, store_history=False):
-    # [FIX] Move kernel compilation inside the function and use an f-string 
-    # to statically allocate shared memory using the `threads` variable!
-    if compute_forces_func is None:
-        force_kernel_optimized = f'''
-        extern "C" __global__
-        void compute_forces_cupy_optimized(
-            const float* __restrict__ pos_x,
-            const float* __restrict__ pos_y,
-            const float* __restrict__ pos_z,
-            const float* __restrict__ mass,
-            float* __restrict__ force_x,
-            float* __restrict__ force_y,
-            float* __restrict__ force_z,
-            int N, float G, float EPSILON)
-        {{
-            // STATICALLY allocated shared memory (Bypasses the cupy kwarg bug)
-            __shared__ float sh_pos_x[{threads}];
-            __shared__ float sh_pos_y[{threads}];
-            __shared__ float sh_pos_z[{threads}];
-            __shared__ float sh_mass[{threads}];
-
-            int i = blockIdx.x * blockDim.x + threadIdx.x;
-            
-            float rx = 0.0f, ry = 0.0f, rz = 0.0f, m_i = 0.0f;
-            if (i < N) {{
-                rx = pos_x[i];
-                ry = pos_y[i];
-                rz = pos_z[i];
-                m_i = mass[i];
-            }}
-
-            float fx = 0.0f;
-            float fy = 0.0f;
-            float fz = 0.0f;
-            float eps2 = EPSILON * EPSILON;
-
-            int num_tiles = (N + blockDim.x - 1) / blockDim.x;
-
-            for (int tile = 0; tile < num_tiles; tile++) {{
-                // 1. Load data into shared memory
-                int load_idx = tile * blockDim.x + threadIdx.x;
-                
-                if (load_idx < N) {{
-                    sh_pos_x[threadIdx.x] = pos_x[load_idx];
-                    sh_pos_y[threadIdx.x] = pos_y[load_idx];
-                    sh_pos_z[threadIdx.x] = pos_z[load_idx];
-                    sh_mass[threadIdx.x]  = mass[load_idx];
-                }} else {{
-                    sh_pos_x[threadIdx.x] = 0.0f;
-                    sh_pos_y[threadIdx.x] = 0.0f;
-                    sh_pos_z[threadIdx.x] = 0.0f;
-                    sh_mass[threadIdx.x]  = 0.0f; 
-                }}
-
-                __syncthreads();
-
-                // 2. Compute forces
-                if (i < N) {{
-                    #pragma unroll 8
-                    for (int j = 0; j < {threads}; j++) {{
-                        float dx = sh_pos_x[j] - rx;
-                        float dy = sh_pos_y[j] - ry;
-                        float dz = sh_pos_z[j] - rz;
-
-                        float d2 = dx*dx + dy*dy + dz*dz + eps2;
-                        float inv_dist = rsqrtf(d2); 
-                        float s = sh_mass[j] * inv_dist * inv_dist * inv_dist;
-
-                        fx += dx * s;
-                        fy += dy * s;
-                        fz += dz * s;
-                    }}
-                }}
-                __syncthreads();
-            }}
-
-            // Write coalesced forces back
-            if (i < N) {{
-                force_x[i] = fx * G * m_i;
-                force_y[i] = fy * G * m_i;
-                force_z[i] = fz * G * m_i;
-            }}
-        }}
-        '''
-        
-        # Compile the dynamically generated kernel (CuPy heavily caches this anyway)
-        compute_forces_func = cp.RawKernel(
-            force_kernel_optimized, 
-            'compute_forces_cupy_optimized', 
-            options=('-use_fast_math', '-lineinfo',  '-std=c++17'), 
-            backend='nvcc'
-        )
-
     # --- SETUP & TRANSFER ---
     N = pos_host.shape[0]
     blocks = (N + threads - 1) // threads
@@ -404,6 +310,6 @@ if __name__ == "__main__":
     
     print(f"Simulation with Cupy. Initializing {args.num_bodies} bodies...")
 
-    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=None)
+    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=compute_forces_cupy_naive)
     
     print("Simulation step complete.")

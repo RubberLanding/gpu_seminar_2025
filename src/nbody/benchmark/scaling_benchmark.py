@@ -4,10 +4,10 @@ import numpy as np
 
 from nbody.benchmark.benchmark import measure_time_cupy, measure_time_numba, measure_time_torch, measure_time_triton
 from nbody.benchmark.util import cleanup_gpu, store_results, plot_results, create_report
-from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_keops #, compute_forces_pytorch_chunked, compute_forces_pytorch_matmul, compute_forces_pytorch_optimized
-from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_optimized, compute_forces_cupy_tiled
-from nbody.numba_.simulation import compute_forces_numba_naive, gpu_step_pos, gpu_step_vel, compute_forces_numba_tiled, update_position_soa, update_velocity_soa
-from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized #, compute_accel_triton_tensor, compute_accel_triton_tiled, compute_accel_triton_mixed
+from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_keops 
+from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_optimized
+from nbody.numba_.simulation import compute_forces_numba_naive, compute_forces_numba_optimized
+from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized 
 
 def run_scaling_benchmark(measure_time_func, n_particles, compute_forces=None, **kwargs):
     results = {
@@ -53,7 +53,7 @@ if __name__== "__main__":
     parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
             "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_tensor", "compute_accel_triton_tiled", "compute_accel_triton_mixed",
             "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops", "compute_forces_cupy_optimized",
-            "compute_forces_numba_naive", "compute_forces_numba_tiled", 
+            "compute_forces_numba_naive", "compute_forces_numba_tiled", "compute_forces_numba_optimized", 
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
             "compute_forces_pytorch_matmul", "compute_forces_pytorch_optimized"], 
             help="One or more force functions to benchmark.")
@@ -72,7 +72,7 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
                 "compute_forces_cupy_optimized": compute_forces_cupy_optimized,
-                "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
+                # "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
                 # "compute_forces_cupy_keops": compute_forces_cupy_keops,
             }
         },
@@ -80,7 +80,8 @@ if __name__== "__main__":
             "measure": measure_time_numba,
             "kernels": {
                 "compute_forces_numba_naive": compute_forces_numba_naive,
-                "compute_forces_numba_tiled": compute_forces_numba_tiled(args.threads),
+                # "compute_forces_numba_tiled": compute_forces_numba_tiled(args.threads),
+                "compute_forces_numba_optimized": compute_forces_numba_optimized(args.threads),
             }
         },
         "triton": {
