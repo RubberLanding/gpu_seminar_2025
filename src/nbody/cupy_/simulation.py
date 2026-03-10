@@ -50,63 +50,186 @@ void compute_forces_cupy_naive(const float* pos, const float* mass, float* force
 }
 '''
 
-force_kernel_optimized = r'''
+force_kernel_tiled = r'''
 extern "C" __global__
-void compute_forces_cupy_optimized(
-    const float* __restrict__ pos_x,
-    const float* __restrict__ pos_y,
-    const float* __restrict__ pos_z,
-    const float* __restrict__ mass,
-    float* __restrict__ force_x,
-    float* __restrict__ force_y,
-    float* __restrict__ force_z,
-    int N, float G, float EPSILON)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= N) return;
+void compute_forces_cupy_tiled(const float* pos, const float* mass, float* force, 
+                                   int n, float G, float EPSILON) {
+    // Allocate shared memory for the tile (supports up to 1024 threads per block)
+    __shared__ float sh_px[1024];
+    __shared__ float sh_py[1024];
+    __shared__ float sh_pz[1024];
+    __shared__ float sh_m[1024];
 
-    // Hoist target particle to registers
-    float rx = pos_x[i];
-    float ry = pos_y[i];
-    float rz = pos_z[i];
-    float m_i = mass[i];
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int tid = threadIdx.x;
+    
+    // Hoist particle i's data into registers
+    float px_i = 0.0f, py_i = 0.0f, pz_i = 0.0f, m_i = 0.0f;
+    if (i < n) {
+        px_i = pos[i*3 + 0];
+        py_i = pos[i*3 + 1];
+        pz_i = pos[i*3 + 2];
+        m_i  = mass[i];
+    }
 
     float fx = 0.0f;
     float fy = 0.0f;
     float fz = 0.0f;
-    
-    // Precompute epsilon squared to save ALU cycles in the loop
-    float eps2 = EPSILON * EPSILON;
 
-    // Direct global memory read.
-    // The L1 Cache will 100% perfectly broadcast pos_x[j] to the entire warp!
-    #pragma unroll 8
-    for (int j = 0; j < N; j++) {
-        float dx = pos_x[j] - rx;
-        float dy = pos_y[j] - ry;
-        float dz = pos_z[j] - rz;
+    // Calculate how many tiles we need to cover all 'n' particles
+    int num_tiles = (n + blockDim.x - 1) / blockDim.x;
 
-        float d2 = dx*dx + dy*dy + dz*dz + eps2;
-        float inv_dist = rsqrtf(d2); 
-        float s = mass[j] * inv_dist * inv_dist * inv_dist;
+    for (int tile = 0; tile < num_tiles; tile++) {
+        // 1. Every thread cooperatively loads ONE particle into shared memory
+        int j = tile * blockDim.x + threadIdx.x;
+        
+        if (j < n) {
+            sh_px[tid] = pos[j*3 + 0];
+            sh_py[tid] = pos[j*3 + 1];
+            sh_pz[tid] = pos[j*3 + 2];
+            sh_m[tid]  = mass[j];
+        } else {
+            // Pad out-of-bounds with zero mass to nullify force contributions
+            sh_px[tid] = 0.0f;
+            sh_py[tid] = 0.0f;
+            sh_pz[tid] = 0.0f;
+            sh_m[tid]  = 0.0f; 
+        }
+        
+        // Ensure all threads have finished writing to shared memory
+        __syncthreads();
 
-        fx += dx * s;
-        fy += dy * s;
-        fz += dz * s;
+        // 2. Compute forces against all particles in the current tile
+        #pragma unroll 16
+        for (int k = 0; k < blockDim.x; k++) {
+            float dx = px_i - sh_px[k];
+            float dy = py_i - sh_py[k];
+            float dz = pz_i - sh_pz[k];
+
+            float d2 = dx*dx + dy*dy + dz*dz + EPSILON*EPSILON;
+            float inv_dist = rsqrtf(d2);
+            float inv_dist3 = inv_dist * inv_dist * inv_dist;
+            
+            float s = sh_m[k] * inv_dist3;
+
+            fx += dx * s;
+            fy += dy * s;
+            fz += dz * s;
+        }
+        
+        // Ensure all threads are done reading before the next tile overwrites shared memory
+        __syncthreads();
     }
 
-    // Write coalesced forces back to global memory
-    force_x[i] = fx * G * m_i;
-    force_y[i] = fy * G * m_i;
-    force_z[i] = fz * G * m_i;
+    // Write final force back to global memory
+    if (i < n) {
+        float factor = -G * m_i;
+        force[i*3 + 0] = fx * factor;
+        force[i*3 + 1] = fy * factor;
+        force[i*3 + 2] = fz * factor;
+    }
 }
 '''
 
 # Compile the kernel once
-compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math', '-lineinfo'), backend='nvcc')
-compute_forces_cupy_optimized = cp.RawKernel(force_kernel_optimized, 'compute_forces_cupy_optimized', options=('-use_fast_math', '-lineinfo'), backend='nvcc')
+compute_forces_cupy_naive = cp.RawKernel(force_kernel_naive, 'compute_forces_cupy_naive', options=('-use_fast_math', '-lineinfo', '-std=c++17'), backend='nvcc')
+compute_forces_cupy_tiled = cp.RawKernel(force_kernel_tiled, 'compute_forces_cupy_tiled', options=('-use_fast_math', '-lineinfo', '-std=c++17'), backend='nvcc')
+compute_forces_cupy_optimized = None
 
-def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_optimized, threads=128, store_history=False):
+def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces_func=compute_forces_cupy_naive, threads=128, store_history=False):
+    # [FIX] Move kernel compilation inside the function and use an f-string 
+    # to statically allocate shared memory using the `threads` variable!
+    if compute_forces_func is None:
+        force_kernel_optimized = f'''
+        extern "C" __global__
+        void compute_forces_cupy_optimized(
+            const float* __restrict__ pos_x,
+            const float* __restrict__ pos_y,
+            const float* __restrict__ pos_z,
+            const float* __restrict__ mass,
+            float* __restrict__ force_x,
+            float* __restrict__ force_y,
+            float* __restrict__ force_z,
+            int N, float G, float EPSILON)
+        {{
+            // STATICALLY allocated shared memory (Bypasses the cupy kwarg bug)
+            __shared__ float sh_pos_x[{threads}];
+            __shared__ float sh_pos_y[{threads}];
+            __shared__ float sh_pos_z[{threads}];
+            __shared__ float sh_mass[{threads}];
+
+            int i = blockIdx.x * blockDim.x + threadIdx.x;
+            
+            float rx = 0.0f, ry = 0.0f, rz = 0.0f, m_i = 0.0f;
+            if (i < N) {{
+                rx = pos_x[i];
+                ry = pos_y[i];
+                rz = pos_z[i];
+                m_i = mass[i];
+            }}
+
+            float fx = 0.0f;
+            float fy = 0.0f;
+            float fz = 0.0f;
+            float eps2 = EPSILON * EPSILON;
+
+            int num_tiles = (N + blockDim.x - 1) / blockDim.x;
+
+            for (int tile = 0; tile < num_tiles; tile++) {{
+                // 1. Load data into shared memory
+                int load_idx = tile * blockDim.x + threadIdx.x;
+                
+                if (load_idx < N) {{
+                    sh_pos_x[threadIdx.x] = pos_x[load_idx];
+                    sh_pos_y[threadIdx.x] = pos_y[load_idx];
+                    sh_pos_z[threadIdx.x] = pos_z[load_idx];
+                    sh_mass[threadIdx.x]  = mass[load_idx];
+                }} else {{
+                    sh_pos_x[threadIdx.x] = 0.0f;
+                    sh_pos_y[threadIdx.x] = 0.0f;
+                    sh_pos_z[threadIdx.x] = 0.0f;
+                    sh_mass[threadIdx.x]  = 0.0f; 
+                }}
+
+                __syncthreads();
+
+                // 2. Compute forces
+                if (i < N) {{
+                    #pragma unroll 8
+                    for (int j = 0; j < {threads}; j++) {{
+                        float dx = sh_pos_x[j] - rx;
+                        float dy = sh_pos_y[j] - ry;
+                        float dz = sh_pos_z[j] - rz;
+
+                        float d2 = dx*dx + dy*dy + dz*dz + eps2;
+                        float inv_dist = rsqrtf(d2); 
+                        float s = sh_mass[j] * inv_dist * inv_dist * inv_dist;
+
+                        fx += dx * s;
+                        fy += dy * s;
+                        fz += dz * s;
+                    }}
+                }}
+                __syncthreads();
+            }}
+
+            // Write coalesced forces back
+            if (i < N) {{
+                force_x[i] = fx * G * m_i;
+                force_y[i] = fy * G * m_i;
+                force_z[i] = fz * G * m_i;
+            }}
+        }}
+        '''
+        
+        # Compile the dynamically generated kernel (CuPy heavily caches this anyway)
+        compute_forces_func = cp.RawKernel(
+            force_kernel_optimized, 
+            'compute_forces_cupy_optimized', 
+            options=('-use_fast_math', '-lineinfo',  '-std=c++17'), 
+            backend='nvcc'
+        )
+
     # --- SETUP & TRANSFER ---
     N = pos_host.shape[0]
     blocks = (N + threads - 1) // threads
@@ -163,12 +286,6 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces
         
         cp.cuda.Stream.null.synchronize()
 
-        print("\n--- DEBUG STEP 0 ---")
-        print(f"Type of G: {type(G)}, Type of EPS: {type(EPSILON)}")
-        print(f"Force X (First 3): {d_f_old_x[:3].get()}")
-        print(f"Positions X (First 3): {d_px[:3].get()}")
-        print("--------------------\n")
-
         dt_fp32 = cp.float32(dt)
         half_dt_fp32 = cp.float32(0.5 * dt)
         half_dt2_fp32 = cp.float32(0.5 * dt * dt)
@@ -190,12 +307,6 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces
             d_vx += (d_f_old_x + d_f_new_x) * d_inv_mass * half_dt_fp32
             d_vy += (d_f_old_y + d_f_new_y) * d_inv_mass * half_dt_fp32
             d_vz += (d_f_old_z + d_f_new_z) * d_inv_mass * half_dt_fp32
-
-            if step % 50 == 0:
-                print(f"\n--- DEBUG STEP {step+1} ---")
-                print(f"Force X (First 3): {d_f_old_x[:3].get()}")
-                print(f"Positions X (First 3): {d_px[:3].get()}")
-                print("--------------------\n")
 
             if store_history:
                 pos_history[step + 1, :, 0] = d_px.get()
@@ -293,6 +404,6 @@ if __name__ == "__main__":
     
     print(f"Simulation with Cupy. Initializing {args.num_bodies} bodies...")
 
-    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=compute_forces_cupy_optimized)
+    run_simulation_cupy(pos, vel, mass, args.dt, args.steps, store_history=False, compute_forces_func=None)
     
     print("Simulation step complete.")
