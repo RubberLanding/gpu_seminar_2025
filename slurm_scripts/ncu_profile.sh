@@ -9,10 +9,13 @@
 #SBATCH --output=/p/home/jusers/%u/jureca/gpu_seminar_2025/slurm_reports/ncu/profile_output_%j.txt
 #SBATCH --error=/p/home/jusers/%u/jureca/gpu_seminar_2025/slurm_reports/ncu/profile_error_%j.txt
 
-MODE=${1:-numba}
+MODE=${1:-triton}
 NUM_PARTICLES=${2:-100000}
 NUM_STEPS=${3:-10} 
-FORCE_FUNC=${4:-compute_forces_numba_tiled} 
+FORCE_FUNC=${4:-compute_accel_triton_optimized}
+
+THREADS="64"
+BLOCKSIZE="256"
 
 # Set a base directory to ensure relative execution paths work correctly
 BASE_DIR="$HOME/gpu_seminar_2025"
@@ -35,9 +38,9 @@ echo "GPUs available:            $CUDA_VISIBLE_DEVICES"
 # --- Module Loading ---
 module purge
 module load Stages/2025 
+module load CUDA/12
 module load GCCcore/.13.3.0
 module load Nsight-Compute/2024.3.2
-module load CUDA
 
 source ~/.bashrc  
 micromamba activate nbody
@@ -97,6 +100,7 @@ ncu --section SpeedOfLight \
     python src/nbody/benchmark/benchmark.py \
         -f "$FORCE_FUNC" \
         -n "$NUM_PARTICLES" \
-        -s "$NUM_STEPS"
+        -s "$NUM_STEPS" \
+        # -bs "$BLOCKSIZE"
 
 echo "Profiling finished. Report saved to: $REPORT_DIR"

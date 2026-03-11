@@ -12,6 +12,9 @@ from nbody.numba_.simulation import compute_forces_numba_naive, update_position,
 from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized
 from nbody.benchmark.util import print_results, cleanup_gpu
 
+import warnings
+warnings.filterwarnings("ignore", module="sympy")
+
 # Constants
 G = 6.67430e-11
 EPSILON = 1e-4
@@ -61,8 +64,12 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
             # [Step A] Update Position
             pos += (vel * dt_tensor) + (force_old * inv_m * dt2_half)
 
+            torch.cuda.nvtx.range_push("nbody_step")
+
             # [Step B] Compute Forces
             force_new = compute_forces_func(pos, mass, G, EPSILON).clone()
+
+            torch.cuda.nvtx.range_pop()
 
             # [Step C] Update Velocity
             vel += (force_old + force_new) * inv_m * dt_half
@@ -476,7 +483,7 @@ if __name__== "__main__":
         measure_kwargs = {}
         if framework == "triton":
             measure_kwargs["block_size"] = args.block_size
-        elif framework == "cupy":
+        elif framework in ["cupy", "numba"]:
             measure_kwargs["threads"] = args.threads
             
         np.random.seed(42) 

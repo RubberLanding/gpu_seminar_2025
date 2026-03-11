@@ -1,4 +1,3 @@
-import inspect
 import argparse
 import numpy as np
 
@@ -124,7 +123,7 @@ if __name__== "__main__":
         measure_kwargs = {}
         if framework == "triton":
             measure_kwargs["block_size"] = args.block_size
-        elif framework == "cupy":
+        elif framework in ["cupy", "numba"]:
             measure_kwargs["threads"] = args.threads
 
         results = run_scaling_benchmark(

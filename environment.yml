@@ -1,31 +1,32 @@
 name: nbody
 channels:
-  - pytorch       # Explicitly add pytorch channel for pytorch-cuda
-  - nvidia        # Explicitly add nvidia channel for CUDA tools
+  - pytorch
+  - nvidia
   - conda-forge
 
 dependencies:
-  - python=3.10   # Pin this to ensure compatibility (3.10 or 3.11 is safe)
+  - python=3.10
   
-  - ipykernel     # Required for VS Code to see the kernel
-  - ipympl        # Good for interactive plots in VS Code
-  - matplotlib    # For static plotting
-  - debugpy       # For debugging
-  - pytest        # For testing
+  - ipykernel
+  - ipympl
+  - matplotlib
+  - pandas
+  - plotly
+  - seaborn
+  
+  - debugpy
+  - pytest
 
   - numpy
   - cupy
-
   - numba
   - numba-cuda  
 
-  - pytorch::pytorch              # Forces package from 'pytorch' channel
-  - pytorch::pytorch-cuda=12.1    # Forces package from 'pytorch' channel
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.1 
 
-  - pykeops              
-  - gxx_linux-64          # REQUIRED: The C++ compiler (gcc) for compiling kernels
-  - cmake                 # REQUIRED: Build system used by KeOps
+  - pip
   
-  # --- Optional: Explicit CUDA Toolkit ---
-  # If 'numba-cuda' fails to find drivers, uncomment the line below:
-  # - cuda-toolkit
+  # --- Install PyKeOps via pip ---
+  - pip:
+      - pykeops

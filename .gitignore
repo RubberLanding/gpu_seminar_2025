@@ -29,3 +29,4 @@ PKG-INFO
 *.ncu-rep
 
 profiling_reports/
+build/
