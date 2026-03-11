@@ -50,7 +50,7 @@ if __name__== "__main__":
     parser.add_argument("-s", "--steps", type=int, default=20, help="Number of steps per run")
     parser.add_argument("-dt", "--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("-f", "--force-func", type=str, nargs="+", choices=[
-            "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_soa"
+            "compute_accel_triton_naive", "compute_accel_triton_optimized", "compute_accel_triton_soa",
             "compute_forces_cupy_naive", "compute_forces_cupy_tiled", "compute_forces_cupy_keops", "compute_forces_cupy_optimized",
             "compute_forces_numba_naive", "compute_forces_numba_tiled", "compute_forces_numba_optimized", 
             "compute_forces_pytorch_naive", "compute_forces_pytorch_chunked", "compute_forces_pytorch_keops", 
