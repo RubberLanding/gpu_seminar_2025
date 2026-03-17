@@ -6,7 +6,7 @@ import triton
 import cupy as cp
 import numpy as np
 
-from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_keops
+from nbody.pytorch_.simulation import compute_forces_pytorch_naive, compute_forces_pytorch_keops, set_triton_config
 from nbody.cupy_.simulation import compute_forces_cupy_naive, compute_forces_cupy_optimized
 from nbody.numba_.simulation import compute_forces_numba_naive, update_position, update_velocity, compute_forces_numba_optimized, update_position_soa, update_velocity_soa
 from nbody.triton_.simulation import compute_accel_triton_naive, compute_accel_triton_optimized
@@ -20,7 +20,7 @@ G = 6.67430e-11
 EPSILON = 1e-4
 WARUM_UP_ITER = 5
 
-def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_pytorch_naive, triton_block_size=4096):
+def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute_forces_func=compute_forces_pytorch_naive, triton_block_size=8192):
     # --- SETUP & TRANSFER ---
     assert torch.cuda.is_available(), "CUDA is not available!"
     device = torch.device("cuda")   
@@ -28,8 +28,8 @@ def measure_time_torch(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
 
-    # cleanup_gpu()
-    # set_triton_config(triton_block_size)
+    cleanup_gpu()
+    set_triton_config(triton_block_size)
     
     pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
     vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
