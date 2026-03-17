@@ -161,7 +161,6 @@ def measure_time_numba(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
     blocks = (N + threads - 1) // threads
     
     # Check if the passed function is the SoA optimized version
-    # getattr is used safely in case the function is wrapped/decorated
     func_name = getattr(compute_forces_func, '__name__', 'Unknown')
     is_soa = ('optimized' in func_name)
     
@@ -173,9 +172,7 @@ def measure_time_numba(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
     end_event   = numba.cuda.event()
 
     if is_soa:
-        # =========================================================
-        # PATH A: STRUCTURE OF ARRAYS (SoA)
-        # =========================================================        
+        # Structure of Arrays memory layout
         px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
         py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
         pz = np.ascontiguousarray(pos_host[:, 2], dtype=np.float32)
@@ -221,9 +218,6 @@ def measure_time_numba(pos_host, vel_host, mass_host, dt=0.01, steps=10, compute
         end_event.record()
 
     else:
-        # =========================================================
-        # PATH B: ARRAY OF STRUCTURES (AoS - Naive/Tiled)
-        # =========================================================
         pos  = numba.cuda.to_device(pos_host.astype(np.float32))
         vel  = numba.cuda.to_device(vel_host.astype(np.float32))
         mass = numba.cuda.to_device(mass_host.astype(np.float32))
@@ -271,7 +265,7 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, comput
         return (triton.cdiv(N, meta['BLOCK_SIZE']),)
 
     if is_soa:
-        # --- SoA ALLOCATION ---
+        # Structure of Arrays memory layout
         pos_x = torch.tensor(pos_host[:, 0], device=device, dtype=torch.float32).contiguous()
         pos_y = torch.tensor(pos_host[:, 1], device=device, dtype=torch.float32).contiguous()
         pos_z = torch.tensor(pos_host[:, 2], device=device, dtype=torch.float32).contiguous()
@@ -296,6 +290,9 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, comput
         # --- WARM-UP ---
         compute_forces_func[grid](pos_x, pos_y, pos_z, mass, force_old_x, force_old_y, force_old_z, G, EPSILON, N, BLOCK_SIZE=block_size)
 
+        # WARNING: Although named 'force_old/new' and 'compute_forces_func' to match other backends,
+        # the Triton kernel calculates ACCELERATION directly (Force / Mass).
+        # Therefore, we DO NOT multiply by inv_m in the update steps below.
         for step in range(WARUM_UP_ITER):
             pos_x += (vel_x * dt_vec) + (force_old_x * dt2_half)
             pos_y += (vel_y * dt_vec) + (force_old_y * dt2_half)
@@ -345,7 +342,6 @@ def measure_time_triton(pos_host, vel_host, mass_host, dt=0.01, steps=10, comput
         return steps, total_time, steps_per_second, interactions_per_second
 
     else:
-        # --- AoS    ALLOCATION ---
         pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
         vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)
         mass = torch.tensor(mass_host, device=device, dtype=torch.float32)
@@ -433,7 +429,6 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
                 "compute_forces_cupy_optimized": compute_forces_cupy_optimized,
-                # "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
             }
         },
         "numba": {
@@ -449,7 +444,6 @@ if __name__== "__main__":
             "kernels": {
                 "compute_accel_triton_naive": compute_accel_triton_naive,
                 "compute_accel_triton_optimized": compute_accel_triton_optimized,
-                # "compute_accel_triton_soa": compute_accel_triton_soa,
             }
         },
         "pytorch": {

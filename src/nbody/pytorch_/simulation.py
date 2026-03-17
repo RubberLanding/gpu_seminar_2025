@@ -20,16 +20,6 @@ def set_triton_config(block_size):
         hints.TRITON_MAX_BLOCK["X"] = block_size
     except (ImportError, AttributeError, KeyError):
         print("Warning: Could not patch hints")
-    # try:
-    #     import torch._inductor.config as config
-    #     # This forces the compiler to use cuBLAS instead of generating Triton kernels for matmuls
-    #     config.freezing = True
-    #     config.triton.desugared_library_calls = True
-    #     # This is the "Magic" flag that stops Inductor from trying to out-think cuBLAS
-    #     config.coordinate_descent_tuning = True
-    # except (ImportError, AttributeError, KeyError):
-    #     print("Warning: Could not patch config")
-
 
 # Constants
 G = 6.67430e-11
@@ -46,7 +36,7 @@ def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
     # m_j: source masses (1, N, 1)
     m_j = LazyTensor(mass[None, :, None])
 
-    # Symbolic computation (no memory allocated yet)
+    # Symbolic computation
     diff = x_i - y_j
     sq_dist = (diff ** 2).sum(-1)
     inv_dist_cube = (sq_dist + EPSILON**2).rsqrt() ** 3
@@ -56,8 +46,6 @@ def compute_forces_pytorch_keops(pos, mass, G, EPSILON):
 
     return -G * mass.unsqueeze(1) * ftmp
 
-# Regular approach
-# Chunk size is a dummy argument and can be removed in later versions
 @torch.compile(mode="max-autotune")
 def compute_forces_pytorch_naive(pos, mass, G, EPSILON):
     diff = pos.unsqueeze(1) - pos.unsqueeze(0)
@@ -80,8 +68,6 @@ def run_simulation_torch(pos_host, vel_host, mass_host, dt, steps, compute_force
     device = torch.device("cuda")   
     print(f"Running on GPU (PyTorch). N={pos_host.shape[0]}, Steps={steps}")
     print(f"Using Force Function: {compute_forces_func.__name__}")
-
-    # torch.cuda.empty_cache()
 
     pos  = torch.tensor(pos_host,  device=device, dtype=torch.float32)
     vel  = torch.tensor(vel_host,  device=device, dtype=torch.float32)

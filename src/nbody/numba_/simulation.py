@@ -74,7 +74,7 @@ def compute_forces_numba_optimized(threads_per_block=128):
         G_f32 = float32(G_val)
         EPS2_f32 = float32(EPS_val * EPS_val)
         
-        # 1D Shared memory arrays for perfectly coalesced memory access
+        # 1D Shared memory arrays for coalesced memory access
         sh_pos_x = cuda.shared.array(shape=TPB, dtype=float32)
         sh_pos_y = cuda.shared.array(shape=TPB, dtype=float32)
         sh_pos_z = cuda.shared.array(shape=TPB, dtype=float32)
@@ -187,10 +187,7 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         pos_history, vel_history = None, None
 
     if is_soa:
-        # =========================================================
-        # PATH A: STRUCTURE OF ARRAYS (SoA)
-        # =========================================================
-
+        # Structure of Arrays memory layout
         px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
         py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
         pz = np.ascontiguousarray(pos_host[:, 2], dtype=np.float32)
@@ -221,13 +218,13 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
 
         # --- START SIMULATION ---
         for step in range(steps):
-            # [Step A] Update Position: r(t+dt) = r(t) + v(t)dt + 0.5*a(t)dt^2
+            # [Step A] Update Position
             update_position_soa[blocks, threads](d_px, d_py, d_pz, d_vx, d_vy, d_vz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, np.float32(dt))
             
-            # [Step B] Compute Forces: F(t+dt)
+            # [Step B] Compute Forces
             compute_forces_func[blocks, threads](d_px, d_py, d_pz, d_mass, d_f_new_x, d_f_new_y, d_f_new_z, np.float32(G), np.float32(EPSILON))
             
-            # [Step C] Update Velocity: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
+            # [Step C] Update Velocity
             update_velocity_soa[blocks, threads](d_vx, d_vy, d_vz, d_mass, d_f_old_x, d_f_old_y, d_f_old_z, d_f_new_x, d_f_new_y, d_f_new_z, np.float32(dt))
             
             if store_history:                
@@ -278,13 +275,13 @@ def run_simulation_numba(pos_host, vel_host, mass_host, dt, steps, compute_force
         # --- START SIMULATION ---
         for step in range(steps):
             
-            # [Step A] Update Position: r(t+dt) = r(t) + v(t)dt + 0.5*a(t)dt^2
+            # [Step A] Update Position
             update_position[blocks, threads](pos, vel, mass, force_old, dt)
             
-            # [Step B] Compute Forces: F(t+dt)
+            # [Step B] Compute Forces
             compute_forces_func[blocks, threads](pos, mass, force_new, G, EPSILON)
             
-            # [Step C] Update Velocity: v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))dt
+            # [Step C] Update Velocity
             update_velocity[blocks, threads](vel, mass, force_old, force_new, dt)
             
             if store_history:

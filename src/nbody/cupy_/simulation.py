@@ -13,7 +13,7 @@ void compute_forces_cupy_naive(const float* pos, const float* mass, float* force
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     if (i >= n) return;
 
-    // Hoist particle i's data into registers
+    // Load particle i's data into registers
     float px_i = pos[i*3 + 0];
     float py_i = pos[i*3 + 1];
     float pz_i = pos[i*3 + 2];
@@ -63,7 +63,7 @@ void compute_forces_cupy_optimized(const float* pos, const float* mass, float* f
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int tid = threadIdx.x;
     
-    // Hoist particle i's data into registers
+    // Load particle i's data into registers
     float px_i = 0.0f, py_i = 0.0f, pz_i = 0.0f, m_i = 0.0f;
     if (i < n) {
         px_i = pos[i*3 + 0];
@@ -80,7 +80,7 @@ void compute_forces_cupy_optimized(const float* pos, const float* mass, float* f
     int num_tiles = (n + blockDim.x - 1) / blockDim.x;
 
     for (int tile = 0; tile < num_tiles; tile++) {
-        // 1. Every thread cooperatively loads ONE particle into shared memory
+        // Every thread cooperatively loads one particle into shared memory
         int j = tile * blockDim.x + threadIdx.x;
         
         if (j < n) {
@@ -155,9 +155,7 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces
         pos_history, vel_history = None, None
 
     if is_soa:
-        # =========================================================
-        # STRUCTURE OF ARRAYS (e.g. optimized kernel)
-        # =========================================================
+        # Structure of Arrays memory layout
         px = np.ascontiguousarray(pos_host[:, 0], dtype=np.float32)
         py = np.ascontiguousarray(pos_host[:, 1], dtype=np.float32)
         pz = np.ascontiguousarray(pos_host[:, 2], dtype=np.float32)
@@ -198,7 +196,7 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces
 
         # --- MAIN LOOP ---
         for step in range(steps):
-            # Step A: Update Position (FIXED)
+            # Step A: Update Position
             d_px += (d_vx * dt_fp32) + (d_f_old_x * d_inv_mass * half_dt2_fp32)
             d_py += (d_vy * dt_fp32) + (d_f_old_y * d_inv_mass * half_dt2_fp32)
             d_pz += (d_vz * dt_fp32) + (d_f_old_z * d_inv_mass * half_dt2_fp32)
@@ -247,9 +245,6 @@ def run_simulation_cupy(pos_host, vel_host, mass_host, dt, steps, compute_forces
             return pos, vel
 
     else:
-        # =========================================================
-        # ARRAY OF STRUCTURES (e.g. naive kernel)
-        # =========================================================
         pos  = cp.array(pos_host,  dtype=cp.float32)
         vel  = cp.array(vel_host,  dtype=cp.float32)
         mass = cp.array(mass_host, dtype=cp.float32)

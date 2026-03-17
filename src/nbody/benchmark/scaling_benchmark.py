@@ -71,7 +71,6 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_cupy_naive": compute_forces_cupy_naive,
                 "compute_forces_cupy_optimized": compute_forces_cupy_optimized,
-                # "compute_forces_cupy_tiled": compute_forces_cupy_tiled,
             }
         },
         "numba": {
@@ -79,7 +78,6 @@ if __name__== "__main__":
             "kernels": {
                 "compute_forces_numba_naive": compute_forces_numba_naive,
                 "compute_forces_numba_optimized": compute_forces_numba_optimized(args.threads),
-                # "compute_forces_numba_tiled": compute_forces_numba_tiled(args.threads),
             }
         },
         "triton": {
@@ -87,7 +85,6 @@ if __name__== "__main__":
             "kernels": {
                 "compute_accel_triton_naive": compute_accel_triton_naive,
                 "compute_accel_triton_optimized": compute_accel_triton_optimized,
-                # "compute_accel_triton_soa": compute_accel_triton_soa,
             }
         },
         "pytorch": {

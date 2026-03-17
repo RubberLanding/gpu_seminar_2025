@@ -136,6 +136,7 @@ def run_simulation_triton(pos_host, vel_host, mass_host, dt, steps, compute_forc
     print(f"Using Force Function: {func_name}")
 
     if is_soa:
+        # Structure of Arrays memory layout        
         pos_x = torch.tensor(pos_host[:, 0], device=device, dtype=torch.float32).contiguous()
         pos_y = torch.tensor(pos_host[:, 1], device=device, dtype=torch.float32).contiguous()
         pos_z = torch.tensor(pos_host[:, 2], device=device, dtype=torch.float32).contiguous()
