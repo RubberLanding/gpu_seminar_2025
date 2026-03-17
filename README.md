@@ -69,5 +69,5 @@ pip install .
 
 To make sure that everything is running correctly, try running the simulation with a small number of particles, e.g. with Numba:
 ```bash
-python src/nbody/numba/simulation.py
+python src/nbody/numba_/simulation.py
 ```
